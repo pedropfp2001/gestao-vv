@@ -1,0 +1,6 @@
+{
+  "name": "Gestão de Pedidos",
+  "description": "Lançamento e controle de pedidos, vendedores, baixas, boletos e relatórios em PDF com fotos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

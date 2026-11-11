@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: gestao-vv
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/status
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 20
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: FIREBASE_SERVICE_ACCOUNT_B64
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
