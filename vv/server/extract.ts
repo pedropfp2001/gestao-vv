@@ -51,17 +51,21 @@ export function makeGeminiExtractor(env: NodeJS.ProcessEnv = process.env, fetchI
     let lastStatus = 502; let lastMsg = 'A IA não respondeu.';
     for (const model of list) {
       try {
-        const r = await fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        const call = () => fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(40_000),
         });
+        let r = await call();
+        if (r.status === 503) { await new Promise((x) => setTimeout(x, env.NODE_ENV === 'test' ? 0 : 2000)); r = await call(); } // sobrecarga temporária: tenta de novo
         if (!r.ok) {
           const detail = (await r.text().catch(() => '')).slice(0, 300);
           console.error(`[IA] modelo ${model} respondeu ${r.status}: ${detail}`);
           lastStatus = r.status === 429 ? 429 : 502;
-          lastMsg = r.status === 429
+          lastMsg = r.status === 503
+            ? 'A IA do Google está sobrecarregada agora. Tente de novo em instantes ou preencha manualmente.'
+            : r.status === 429
             ? 'Limite de uso da IA atingido. Aguarde um pouco ou preencha manualmente.'
             : r.status === 400 || r.status === 403
               ? `A IA recusou a chave ou o pedido (erro ${r.status}). Confira a GEMINI_API_KEY no Render.`
