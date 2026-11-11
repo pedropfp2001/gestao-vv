@@ -58,19 +58,34 @@ export function makeGeminiExtractor(env: NodeJS.ProcessEnv = process.env, fetchI
           signal: AbortSignal.timeout(40_000),
         });
         if (!r.ok) {
+          const detail = (await r.text().catch(() => '')).slice(0, 300);
+          console.error(`[IA] modelo ${model} respondeu ${r.status}: ${detail}`);
           lastStatus = r.status === 429 ? 429 : 502;
-          lastMsg = r.status === 429 ? 'Limite de uso da IA atingido. Aguarde um pouco ou preencha manualmente.' : `A IA recusou a leitura (${r.status}).`;
+          lastMsg = r.status === 429
+            ? 'Limite de uso da IA atingido. Aguarde um pouco ou preencha manualmente.'
+            : r.status === 400 || r.status === 403
+              ? `A IA recusou a chave ou o pedido (erro ${r.status}). Confira a GEMINI_API_KEY no Render.`
+              : r.status === 404
+                ? `Modelo ${model} indisponível (erro 404).`
+                : `A IA recusou a leitura (erro ${r.status}).`;
           continue; // tenta o próximo modelo
         }
         const j: any = await r.json();
-        const text = j?.candidates?.[0]?.content?.parts?.[0]?.text;
-        const p = JSON.parse(text);
+        const text = j?.candidates?.[0]?.content?.parts?.map((x: any) => x?.text || '').join('') || '';
+        if (!text) {
+          console.error(`[IA] modelo ${model} sem texto na resposta:`, JSON.stringify(j).slice(0, 300));
+          lastMsg = `A IA não devolveu texto (${j?.promptFeedback?.blockReason || j?.candidates?.[0]?.finishReason || 'sem motivo'}).`;
+          continue;
+        }
+        const p = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ''));
         const valor = Number(p.valor);
         if (!p.marca || !/^\d{4}-\d{2}-\d{2}$/.test(String(p.data)) || !isFinite(valor)) { lastMsg = 'A IA não conseguiu ler todos os campos.'; continue; }
         const vend = (VALID_SELLERS as readonly string[]).find((s) => s.toLowerCase() === String(p.vendedor || '').trim().toLowerCase());
         return { marca: String(p.marca), data: String(p.data), valor, vendedor: vend };
       } catch (e: any) {
-        lastMsg = 'Falha ao falar com a IA.'; lastStatus = 502;
+        console.error(`[IA] modelo ${model} falhou:`, e?.name, e?.message, e?.cause?.message || '');
+        lastMsg = `Falha ao falar com a IA (${String(e?.cause?.code || e?.name || 'erro')}: ${String(e?.message || '').slice(0, 80)}).`;
+        lastStatus = 502;
       }
     }
     throw new ExtractError(lastMsg, lastStatus);
