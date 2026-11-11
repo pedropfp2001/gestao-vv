@@ -9,7 +9,7 @@ export class ExtractError extends Error {
   constructor(message: string, public status = 502) { super(message); }
 }
 
-const DEFAULT_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest'];
+const DEFAULT_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-latest'];
 
 const systemText = (brands: string[]) => `Você é um OCR de altíssima precisão especializado em ler comprovantes de venda e talões de pedido.
 PRIORIDADE MÁXIMA: identificar o CLIENTE / MARCA.
@@ -48,14 +48,18 @@ export function makeGeminiExtractor(env: NodeJS.ProcessEnv = process.env, fetchI
         },
       },
     };
+    // 2.5: desliga o "raciocínio" extra (só atrasa a leitura de um papel); outros modelos ficam como estão
+    const bodyFor = (model: string) => /gemini-2\.5/.test(model)
+      ? { ...body, generationConfig: { ...body.generationConfig, thinkingConfig: { thinkingBudget: 0 } } }
+      : body;
     let lastStatus = 502; let lastMsg = 'A IA não respondeu.';
     for (const model of list) {
       try {
         const call = () => fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(40_000),
+          body: JSON.stringify(bodyFor(model)),
+          signal: AbortSignal.timeout(25_000),
         });
         let r = await call();
         if (r.status === 503) { await new Promise((x) => setTimeout(x, env.NODE_ENV === 'test' ? 0 : 2000)); r = await call(); } // sobrecarga temporária: tenta de novo
@@ -88,7 +92,9 @@ export function makeGeminiExtractor(env: NodeJS.ProcessEnv = process.env, fetchI
         return { marca: String(p.marca), data: String(p.data), valor, vendedor: vend };
       } catch (e: any) {
         console.error(`[IA] modelo ${model} falhou:`, e?.name, e?.message, e?.cause?.message || '');
-        lastMsg = `Falha ao falar com a IA (${String(e?.cause?.code || e?.name || 'erro')}: ${String(e?.message || '').slice(0, 80)}).`;
+        lastMsg = e?.name === 'TimeoutError'
+          ? 'A IA do Google demorou demais para responder. Tente de novo em instantes ou preencha manualmente.'
+          : `Falha ao falar com a IA (${String(e?.cause?.code || e?.name || 'erro')}: ${String(e?.message || '').slice(0, 80)}).`;
         lastStatus = 502;
       }
     }
