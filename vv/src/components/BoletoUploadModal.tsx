@@ -52,6 +52,7 @@ export const BoletoUploadModal: React.FC<BoletoUploadModalProps> = ({
   const [pdfBoletoName, setPdfBoletoName] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(false);
+  const clientIdRef = useRef<string>(`b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`);
   const [error, setError] = useState<string | null>(null);
   const [brandSellerMap, setBrandSellerMap] = useState<Record<string, string>>({});
   const [autoSellerHint, setAutoSellerHint] = useState<string | null>(null);
@@ -62,6 +63,7 @@ export const BoletoUploadModal: React.FC<BoletoUploadModalProps> = ({
   // Fetch brand-seller map on open
   useEffect(() => {
     if (isOpen) {
+      clientIdRef.current = `b${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`; // novo boleto = novo identificador
       fetch('/api/brand-sellers')
         .then((res) => res.json())
         .then((data) => {
@@ -177,7 +179,7 @@ export const BoletoUploadModal: React.FC<BoletoUploadModalProps> = ({
     setError(null);
 
     try {
-      const payload = {
+      const payload: any = {
         marca: marca.trim().toUpperCase(),
         valor: numValor,
         data: data.trim(),
@@ -191,6 +193,7 @@ export const BoletoUploadModal: React.FC<BoletoUploadModalProps> = ({
         observacao: observacao.trim() || undefined,
         cadastradoPor: currentUser?.name || 'Admin',
       };
+      if (!activeBoleto?.id) payload.clientId = clientIdRef.current; // reenvio/duplo clique não duplica
 
       const url = activeBoleto?.id ? `/api/boletos/${activeBoleto.id}` : '/api/boletos';
       const method = activeBoleto?.id ? 'PUT' : 'POST';
@@ -203,6 +206,7 @@ export const BoletoUploadModal: React.FC<BoletoUploadModalProps> = ({
         referenceId: activeBoleto?.id,
         cliente: payload.marca,
         valor: payload.valor,
+        timeoutMs: 90000,
         actionDescription: activeBoleto?.id ? `Edição de Boleto #${activeBoleto.id} (${payload.marca})` : `Cadastro de Boleto (${payload.marca})`,
       });
 

@@ -68,6 +68,21 @@ export function createApp(store: Store, opts: AppOptions) {
     return `PED-${Date.now()}`;
   };
 
+  /** Identificador do cliente (navegador) para o mesmo lançamento nunca ser gravado duas vezes. */
+  const cleanClientId = (v: any): string | null => {
+    const t = String(v ?? '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 60);
+    return t.length >= 6 ? t : null;
+  };
+  /** Pedidos iguais em andamento esperam o primeiro terminar (evita gravar em dobro por cliques/reenvios simultâneos). */
+  const inflight = new Map<string, Promise<any>>();
+  const once = async <T,>(key: string, fn: () => Promise<T>): Promise<T> => {
+    const running = inflight.get(key);
+    if (running) return running as Promise<T>;
+    const p = fn().finally(() => inflight.delete(key));
+    inflight.set(key, p);
+    return p;
+  };
+
   /** Grava primeiro na nuvem; só depois atualiza a cópia em memória. */
   async function commit(ops: WriteOp[]) {
     await store.batch(ops);
@@ -235,23 +250,29 @@ export function createApp(store: Store, opts: AppOptions) {
     }
     if (imageUrl && !isDataImage(imageUrl)) return res.status(400).json({ error: 'Foto inválida (envie JPEG ou PNG).' });
     if (imageUrl && imageUrl.length > MAX_IMAGE_CHARS) return res.status(413).json({ error: 'Foto muito grande. Reduza a imagem e tente de novo.' });
-    const cleanMarca = normalizeBrandName(marca);
-    const seller = sellerOk(vendedor) || resolveSellerForBrand(cleanMarca, state.brandMap, state.ordersList(), 'Ricardo').seller;
-    const now = new Date().toISOString();
-    const id = newOrderId();
-    const order: any = {
-      id, marca: cleanMarca, data, valor: Number(valor), vendedor: seller, imageUrl: imageUrl ? `/api/orders/${id}/image` : '',
-      status: 'em_aberto', createdAt: now, updatedAt: now,
-    };
-    if (imageUrl) order.imageUpdatedAt = now;
-    const ops: WriteOp[] = [{ type: 'set', col: 'orders', id, data: order }];
-    if (imageUrl) ops.push(imgOp(id, imageUrl, now));
-    await commit(ops);
-    if (cleanMarca && state.brandMap[cleanMarca] !== seller) {
-      state.brandMap[cleanMarca] = seller;
-      await saveBrandMap();
-    }
-    res.status(201).json(orderView(order));
+    const cid = cleanClientId(req.body?.clientId);
+    const fixedId = cid ? `PED-${cid}` : null;
+    const result = await once(fixedId || `rnd-${Math.random()}`, async () => {
+      if (fixedId && state.orders.has(fixedId)) return { order: state.orders.get(fixedId) as any, created: false };
+      const cleanMarca = normalizeBrandName(marca);
+      const seller = sellerOk(vendedor) || resolveSellerForBrand(cleanMarca, state.brandMap, state.ordersList(), 'Ricardo').seller;
+      const now = new Date().toISOString();
+      const id = fixedId || newOrderId();
+      const order: any = {
+        id, marca: cleanMarca, data, valor: Number(valor), vendedor: seller, imageUrl: imageUrl ? `/api/orders/${id}/image` : '',
+        status: 'em_aberto', createdAt: now, updatedAt: now,
+      };
+      if (imageUrl) order.imageUpdatedAt = now;
+      const ops: WriteOp[] = [{ type: 'set', col: 'orders', id, data: order }];
+      if (imageUrl) ops.push(imgOp(id, imageUrl, now));
+      await commit(ops);
+      if (cleanMarca && state.brandMap[cleanMarca] !== seller) {
+        state.brandMap[cleanMarca] = seller;
+        await saveBrandMap();
+      }
+      return { order, created: true };
+    });
+    res.status(result.created ? 201 : 200).json(orderView(result.order));
   }));
 
   const settleOne = (cur: any, opts2: { amount?: number; tipo?: string; por: string; obs?: string; lote?: boolean }) => {
@@ -548,11 +569,14 @@ export function createApp(store: Store, opts: AppOptions) {
     let idx = nextBoletoIndex();
     for (const item of boletos) {
       if (!item.marca || item.valor === undefined || item.valor === null || !item.data) continue;
-      const r = await buildBoleto(item, `bol-${Date.now()}-${Math.floor(Math.random() * 1e6)}-${created.length}`, idx++, req.user!);
+      const cid = cleanClientId(item.clientId ?? item.id);
+      const id = cid ? `bol-c-${cid}` : `bol-${Date.now()}-${Math.floor(Math.random() * 1e6)}-${created.length}`;
+      if (state.boletos.has(id)) { created.push(state.boletos.get(id) as any); continue; } // já gravado antes: não duplica
+      const r = await buildBoleto(item, id, idx++, req.user!);
       ops.push(...r.ops); created.push(r.b); state.brandMap[r.cm] = r.vend;
     }
     if (!created.length) return res.status(400).json({ error: 'Nenhum boleto válido (marca, valor e data são obrigatórios).' });
-    await commit(ops);
+    if (ops.length) await commit(ops);
     await saveBrandMap();
     res.status(201).json({ message: `${created.length} boleto(s) cadastrado(s) com sucesso.`, boletos: created.map(boletoView) });
   }));
@@ -562,11 +586,17 @@ export function createApp(store: Store, opts: AppOptions) {
     if (!item.marca || item.valor === undefined || item.valor === null || !item.data) {
       return res.status(400).json({ error: 'Marca, Valor e Data são obrigatórios.' });
     }
-    const r = await buildBoleto(item, `bol-${Date.now()}-${Math.floor(Math.random() * 1e6)}`, nextBoletoIndex(), req.user!);
-    await commit(r.ops);
-    state.brandMap[r.cm] = r.vend;
-    await saveBrandMap();
-    res.status(201).json(boletoView(r.b));
+    const cid = cleanClientId(item.clientId);
+    const id = cid ? `bol-c-${cid}` : `bol-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const out = await once(id, async () => {
+      if (cid && state.boletos.has(id)) return { b: state.boletos.get(id) as any, created: false };
+      const r = await buildBoleto(item, id, nextBoletoIndex(), req.user!);
+      await commit(r.ops);
+      state.brandMap[r.cm] = r.vend;
+      await saveBrandMap();
+      return { b: r.b, created: true };
+    });
+    res.status(out.created ? 201 : 200).json(boletoView(out.b));
   }));
 
   app.put('/api/boletos/:id', requireGestao, wrap(async (req, res) => {

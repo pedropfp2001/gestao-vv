@@ -61,6 +61,7 @@ export const BoletoBatchUploadModal: React.FC<BoletoBatchUploadModalProps> = ({
   currentUser,
 }) => {
   const [rows, setRows] = useState<BatchBoletoRow[]>([]);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [brandSellerMap, setBrandSellerMap] = useState<Record<string, string>>({});
@@ -563,32 +564,51 @@ export const BoletoBatchUploadModal: React.FC<BoletoBatchUploadModalProps> = ({
       return;
     }
 
+    // Um boleto por vez: cada um leva um identificador próprio, então reenviar nunca duplica.
+    setIsSubmitting(true);
+    const saved: OverdueBoleto[] = [];
+    const failed: { id: string; msg: string }[] = [];
+    const queue = [...rows];
     try {
-      setIsSubmitting(true);
-      const totalBatchVal = rows.reduce((sum, r) => sum + (Number(r.valor) || 0), 0);
-      const res = await safeFetch('/api/boletos/batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          boletos: rows,
-          cadastradoPor: currentUser.name || 'Admin',
-        }),
-        actionType: 'boletos_batch_create',
-        referenceId: `${rows.length} boletos`,
-        valor: totalBatchVal,
-        actionDescription: `Lançamento em lote de ${rows.length} boletos`,
-      });
-
-      if (res.ok) {
-        onSuccess(res.data?.boletos);
+      for (let i = 0; i < queue.length; i++) {
+        const row = queue[i];
+        setProgress({ done: i, total: queue.length });
+        const valor = Number(row.valor);
+        const res = await safeFetch<OverdueBoleto>('/api/boletos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...row, valor, clientId: row.id, cadastradoPor: currentUser.name || 'Admin' }),
+          timeoutMs: 90000,
+          retries: 2, // seguro: o servidor reconhece o mesmo clientId e não grava de novo
+          actionType: 'boleto_create',
+          referenceId: row.id,
+          cliente: row.marca,
+          valor,
+          actionDescription: `Lançamento de boleto ${row.marca}`,
+          silent: true,
+        });
+        if (res.ok && res.data) {
+          saved.push(res.data);
+          setRows((prev) => prev.filter((r) => r.id !== row.id)); // só sai da lista o que foi salvo
+        } else {
+          failed.push({ id: row.id, msg: res.error || 'Falha ao salvar.' });
+        }
+      }
+      setProgress({ done: queue.length, total: queue.length });
+      if (saved.length) onSuccess(saved);
+      if (failed.length === 0) {
         onClose();
       } else {
-        setErrorMessage(res.error || 'Erro ao salvar boletos em lote.');
+        setErrorMessage(
+          `${saved.length} boleto(s) lançado(s). ${failed.length} não foram salvos e continuam na lista — clique em "Lançar" de novo (não duplica). Motivo: ${failed[0].msg}`
+        );
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'Erro de conexão ao salvar.');
+      if (saved.length) onSuccess(saved);
+      setErrorMessage(err.message || 'Erro de conexão ao salvar. Os que já foram lançados não serão duplicados se você tentar de novo.');
     } finally {
       setIsSubmitting(false);
+      setProgress(null);
     }
   };
 
@@ -1086,7 +1106,7 @@ export const BoletoBatchUploadModal: React.FC<BoletoBatchUploadModalProps> = ({
               {isSubmitting ? (
                 <>
                   <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-                  <span>Gravando Boletos...</span>
+                  <span>Gravando {progress ? `${Math.min(progress.done + 1, progress.total)} de ${progress.total}` : ''}…</span>
                 </>
               ) : (
                 <>

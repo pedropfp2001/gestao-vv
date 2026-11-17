@@ -155,12 +155,13 @@ export const OrderUploadModal: React.FC<OrderUploadModalProps> = ({ isOpen, onCl
     const res = await safeFetch<Order>('/api/orders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ marca, data: item.data, valor, vendedor: item.vendedor, imageUrl: item.previewUrl || '' }),
+      body: JSON.stringify({ marca, data: item.data, valor, vendedor: item.vendedor, imageUrl: item.previewUrl || '', clientId: item.id }),
+      timeoutMs: 60000,
       actionType: 'order_create',
       cliente: marca,
       valor,
       actionDescription: `Cadastro de Pedido ${marca}`,
-      retries: 1,
+      retries: 2, // seguro: o servidor reconhece o mesmo clientId e não grava de novo
     });
     if (res.ok && res.data) {
       onOrderCreated(res.data);

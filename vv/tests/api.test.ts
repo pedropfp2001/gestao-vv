@@ -315,14 +315,46 @@ test('extrator Gemini: pula modelo com limite excedido e valida a resposta', asy
   const calls: string[] = [];
   const fake: any = async (url: string) => {
     calls.push(url);
-    if (calls.length === 1) return { ok: false, status: 429, json: async () => ({}) };
+    if (calls.length === 1) return { ok: false, status: 429, text: async () => '', json: async () => ({}) };
     return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({ marca: 'BSM', data: '2026-08-04', valor: 5730, vendedor: 'ricardo' }) }] } }] }) };
   };
   const ex = makeGeminiExtractor({ GEMINI_API_KEY: 'k', GEMINI_MODELS: 'm1,m2' } as any, fake)!;
   const out = await ex(PNG, []);
   assert.deepEqual(out, { marca: 'BSM', data: '2026-08-04', valor: 5730, vendedor: 'Ricardo' });
   assert.equal(calls.length, 2);
-  const bad: any = async () => ({ ok: false, status: 429, json: async () => ({}) });
+  const bad: any = async () => ({ ok: false, status: 429, text: async () => '', json: async () => ({}) });
   const ex2 = makeGeminiExtractor({ GEMINI_API_KEY: 'k', GEMINI_MODELS: 'm1' } as any, bad)!;
   await assert.rejects(() => ex2(PNG, []), (e: any) => e instanceof ExtractError && e.status === 429);
+});
+
+test('lançamento repetido (timeout + reenvio, clique duplo) não duplica boleto nem pedido', async () => {
+  const pedro = await as('Pedro', '3220');
+  const pdf = 'data:application/pdf;base64,JVBERi0xLjQK';
+  const antes = (await pedro.get('/api/boletos')).data.length;
+
+  // mesmo clientId enviado 3x ao mesmo tempo + 1x depois
+  const body = { marca: 'DUPLO', valor: 100, data: '2026-10-01', vendedor: 'Ricardo', clientId: 'row-abc123', pdfBoletoUrl: pdf };
+  const rs = await Promise.all([pedro.post('/api/boletos', body), pedro.post('/api/boletos', body), pedro.post('/api/boletos', body)]);
+  rs.forEach((r) => assert.ok([200, 201].includes(r.status)));
+  const ids = new Set(rs.map((r) => r.data.id));
+  assert.equal(ids.size, 1);
+  const again = await pedro.post('/api/boletos', body);
+  assert.equal(again.status, 200);
+  assert.equal(again.data.id, [...ids][0]);
+  assert.equal((await pedro.get('/api/boletos')).data.length, antes + 1);
+
+  // lote com o mesmo clientId também não duplica
+  const lote = await pedro.post('/api/boletos/batch', { boletos: [body, { marca: 'OUTRO', valor: 5, data: '2026-10-02', clientId: 'row-xyz789' }] });
+  assert.equal(lote.status, 201);
+  assert.equal((await pedro.get('/api/boletos')).data.length, antes + 2);
+
+  // sem clientId continua criando normalmente (compatível)
+  assert.equal((await pedro.post('/api/boletos', { marca: 'SEM', valor: 1, data: '2026-10-03' })).status, 201);
+
+  // pedidos
+  const ob = { marca: 'PEDDUP', data: '2026-10-05', valor: 20, vendedor: 'Ricardo', clientId: 'item-111222' };
+  const os = await Promise.all([pedro.post('/api/orders', ob), pedro.post('/api/orders', ob)]);
+  assert.equal(new Set(os.map((r) => r.data.id)).size, 1);
+  const list = (await pedro.get('/api/orders')).data.filter((o: any) => o.marca === 'PEDDUP');
+  assert.equal(list.length, 1);
 });
