@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import type { Order, OverdueBoleto, AppNotification } from '../src/types';
 import { Store, StoreQuotaError, WriteOp } from './store';
 import { State, UserDoc } from './state';
-import { makeGeminiExtractor, ExtractError, Extractor } from './extract';
+import { makeGeminiExtractor, makeGeminiItemsExtractor, ExtractError, Extractor, ItemsExtractor } from './extract';
 import {
   DEFAULT_PINS, hashPin, verifyPin, signSession, readSession, parseCookies, setSessionCookie,
   clearSessionCookie, COOKIE_NAME, requireGestao, LoginLimiter,
@@ -23,6 +23,7 @@ export interface AppOptions {
   secureCookies?: boolean;
   staticDir?: string;
   extractor?: Extractor | null; // IA opcional (padrão: Gemini se GEMINI_API_KEY existir)
+  itemsExtractor?: ItemsExtractor | null; // leitura dos itens (mercadorias) para o extrato
 }
 
 const wrap = (fn: (req: Request, res: Response) => Promise<any> | any): RequestHandler => (req, res, next) => {
@@ -230,6 +231,29 @@ export function createApp(store: Store, opts: AppOptions) {
 
   const extractor = opts.extractor !== undefined ? opts.extractor : makeGeminiExtractor();
   app.get('/api/extract-order/status', requireGestao, (_req, res) => res.json({ enabled: !!extractor }));
+  const itemsExtractor = opts.itemsExtractor !== undefined ? opts.itemsExtractor : makeGeminiItemsExtractor();
+  app.get('/api/extract-items/status', (_req, res) => res.json({ enabled: !!itemsExtractor }));
+  // Lê as mercadorias da foto de UM pedido em aberto e guarda no pedido (só quando o extrato precisa; não muda mais nada).
+  app.post('/api/orders/:id/itens', wrap(async (req, res) => {
+    const cur: any = state.orders.get(req.params.id);
+    if (!cur || !canSeeOrder(req.user!, cur)) return res.status(404).json({ error: 'Pedido não encontrado.' });
+    if (Array.isArray(cur.itens) && cur.itens.length && !req.body?.force) return res.json({ itens: cur.itens, bilhete: cur.bilhete, vencimento: cur.vencimento, cached: true });
+    if (cur.status === 'baixado') return res.status(409).json({ error: 'Pedido já baixado.' });
+    if (!itemsExtractor) return res.status(503).json({ error: 'Leitura por IA não está ativada (falta GEMINI_API_KEY).' });
+    const doc = await store.get('orderImages', cur.id);
+    if (!doc?.data || !isDataImage(doc.data)) return res.status(422).json({ error: 'Pedido sem foto.' });
+    try {
+      const out = await once(`itens-${cur.id}`, () => itemsExtractor(doc.data));
+      const fresh: any = state.orders.get(cur.id) || cur;
+      const now = new Date().toISOString();
+      const upd = cleanUndefined({ ...fresh, itens: out.itens, bilhete: out.bilhete, vencimento: out.vencimento, itensLidosEm: now, updatedAt: now });
+      await commit([{ type: 'set', col: 'orders', id: cur.id, data: upd }]);
+      res.json({ itens: out.itens, bilhete: out.bilhete, vencimento: out.vencimento });
+    } catch (e: any) {
+      if (e instanceof ExtractError) return res.status(e.status).json({ error: e.message });
+      throw e;
+    }
+  }));
   app.post('/api/extract-order', requireGestao, wrap(async (req, res) => {
     if (!extractor) return res.status(503).json({ error: 'Leitura por IA não está ativada (falta GEMINI_API_KEY). Preencha manualmente.' });
     const { imageBase64 } = req.body || {};

@@ -1,7 +1,8 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Order, CustomerSummary, OverdueBoleto } from '../types';
+import { Order, CustomerSummary, OverdueBoleto, ItemPedido } from '../types';
 import { sharePDFDoc } from './shareUtils';
+import { buildZip, downloadBlob } from './zipStore';
 import {
   formatCurrency,
   formatDateBR,
@@ -364,6 +365,205 @@ export async function generateOverdueBoletosGridPDF(
   }
   totalBar(doc, y, `TOTAL GERAL DE TÍTULOS EM ATRASO: ${open.length}`, `VALOR TOTAL CONSOLIDADO: ${formatCurrency(total)}`);
   await finish(doc, filename, action);
+}
+
+/* ------------------------------------------------------------------ */
+/* Extrato por marca (padrão "Emissão / Atraso / Bilhete / Mercadoria") */
+/* Um PDF por marca, só quem tem N ou mais pedidos em aberto.          */
+/* ------------------------------------------------------------------ */
+function parseIsoDate(s: string): Date {
+  const [y, m, d] = String(s || '').slice(0, 10).split('-').map(Number);
+  return new Date(y || 1970, (m || 1) - 1, d || 1);
+}
+const dmy2 = (d: Date) => {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${String(d.getFullYear()).slice(-2)}`;
+};
+
+export interface ExtratoResultado { clientes: number; itensLidos: number; semItens: number; motivo?: string }
+
+/** Lê (uma por vez, pela IA do servidor) os itens dos pedidos que ainda não têm; guarda no pedido para não reler. */
+async function carregarItens(
+  orders: Order[],
+  onProgress?: (done: number, total: number) => void
+): Promise<{ itens: Map<string, { itens: ItemPedido[]; bilhete?: string; vencimento?: string }>; lidos: number; falhas: number; motivo?: string }> {
+  const out = new Map<string, { itens: ItemPedido[]; bilhete?: string; vencimento?: string }>();
+  let lidos = 0, falhas = 0; let motivo: string | undefined;
+  const pendentes: Order[] = [];
+  orders.forEach((o) => {
+    if (Array.isArray(o.itens) && o.itens.length) out.set(o.id, { itens: o.itens, bilhete: o.bilhete, vencimento: o.vencimento });
+    else if (o.imageUrl) pendentes.push(o);
+  });
+  if (!pendentes.length) return { itens: out, lidos, falhas, motivo };
+  let enabled = false;
+  try { enabled = !!(await (await fetch('/api/extract-items/status')).json())?.enabled; } catch { /* sem IA */ }
+  if (!enabled) return { itens: out, lidos, falhas: pendentes.length, motivo: 'A leitura por IA não está ativada (falta a chave GEMINI_API_KEY).' };
+  for (let i = 0; i < pendentes.length; i++) {
+    onProgress?.(i, pendentes.length);
+    const o = pendentes[i];
+    try {
+      const r = await fetch(`/api/orders/${encodeURIComponent(o.id)}/itens`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && Array.isArray(d.itens) && d.itens.length) {
+        out.set(o.id, { itens: d.itens, bilhete: d.bilhete, vencimento: d.vencimento });
+        lidos++;
+      } else {
+        falhas++; motivo = motivo || d?.error;
+        if (r.status === 429) { falhas += pendentes.length - i - 1; break; } // limite da IA: não adianta insistir
+      }
+    } catch {
+      falhas++; motivo = motivo || 'Sem conexão com o servidor.';
+    }
+    await new Promise((res) => setTimeout(res, 1200)); // uma foto por vez, para respeitar o limite gratuito
+  }
+  onProgress?.(pendentes.length, pendentes.length);
+  return { itens: out, lidos, falhas, motivo };
+}
+
+export async function generateExtratoClientesPDF(
+  orders: Order[],
+  action: 'download' | 'share' = 'download',
+  minOrders = 3,
+  onProgress?: (done: number, total: number) => void
+): Promise<ExtratoResultado> {
+  const open = orders.filter((o) => o.status === 'em_aberto' && saldo(o) > 0);
+  const byBrand = new Map<string, Order[]>();
+  open.forEach((o) => byBrand.set(brandOf(o), [...(byBrand.get(brandOf(o)) || []), o]));
+  const clients = [...byBrand.entries()]
+    .filter(([, list]) => list.length >= minOrders)
+    .map(([marca, list]) => ({ marca, list: [...list].sort((a, b) => a.data.localeCompare(b.data) || a.id.localeCompare(b.id)) }))
+    .sort((a, b) => a.marca.localeCompare(b.marca, 'pt-BR'));
+
+  const filename = `Relatorio_Extrato_${minOrders}_ou_Mais_Pedidos_${todayIso()}.pdf`;
+  if (clients.length === 0) {
+    const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+    headerBand(doc, `EXTRATO POR CLIENTE (${minOrders}+ PEDIDOS)`, 'Distribuidora de Frutas Traviu');
+    emptyReport(doc);
+    await finish(doc, filename, action);
+    return { clientes: 0, itensLidos: 0, semItens: 0 };
+  }
+
+  // só os pedidos dos clientes que entram no relatório precisam ter os itens lidos
+  const { itens: itensMap, lidos, falhas, motivo } = await carregarItens(clients.flatMap((c) => c.list), onProgress);
+
+  const PW = 297, M = 8;
+  const hoje = parseIsoDate(todayIso());
+  const DAY = 86400000;
+  const GRAYBAND: [number, number, number] = [236, 236, 236];
+  let semItens = 0;
+
+  /** Monta o PDF (paisagem) de UMA marca. */
+  const buildClientDoc = (marca: string, list: Order[]): jsPDF => {
+    const doc = new jsPDF({ orientation: 'l', unit: 'mm', format: 'a4' });
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(0, 0, 0);
+    doc.text(`${marca} - ${marca}`, M, 12);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Gerado por ${reportUser} em ${stamp()}`, PW - M, 12, { align: 'right' });
+
+    const body: any[][] = [];
+    const kinds: string[] = [];
+    const blank = () => ['', '', '', '', '', '', '', '', '', ''];
+    let acumulado = 0, volumes = 0;
+
+    list.forEach((o, gi) => {
+      if (gi > 0) { body.push(blank()); kinds.push('gap'); }
+      const extra = itensMap.get(o.id);
+      const emissao = parseIsoDate(o.data);
+      // sem vencimento: o atraso conta os dias desde o dia em que o pedido foi lançado
+      const atraso = Math.max(0, Math.round((hoje.getTime() - emissao.getTime()) / DAY));
+      const bilhete = extra?.bilhete || o.id;
+      const base = [dmy2(emissao), atraso > 0 ? String(atraso) : '', bilhete];
+      const valor = o.valor || 0;
+      acumulado += valor;
+      if (extra?.itens?.length) {
+        extra.itens.forEach((it, k) => {
+          volumes += it.quantidade || 0;
+          body.push([...base, it.mercadoria, it.un || '', formatNumber(it.quantidade), formatNumber(it.preco), formatNumber(it.total), k === extra.itens.length - 1 ? formatNumber(valor) : '', '']);
+          kinds.push('row');
+        });
+      } else {
+        semItens++;
+        body.push([...base, '(itens não lidos)', '', '', '', formatNumber(valor), formatNumber(valor), '']);
+        kinds.push('row');
+      }
+      body.push([{ content: `Total EMISSÃO   ${dmy2(emissao)}`, colSpan: 8, styles: { halign: 'right' } }, formatNumber(valor), formatNumber(acumulado)]);
+      kinds.push('sub');
+    });
+    body.push(blank()); kinds.push('gap');
+    const vendido = list.reduce((s, o) => s + (o.valor || 0), 0);
+    const parciais = list.reduce((s, o) => s + (o.valorPago || 0), 0);
+    const receber = list.reduce((s, o) => s + saldo(o), 0);
+    const resumo: Array<[string, string]> = [
+      ['Total de Pedidos', String(list.length)],
+      ...(volumes > 0 ? [['Total de Volumes', formatNumber(volumes)] as [string, string]] : []),
+      ['Total Vendido', formatNumber(vendido)],
+      ['Pagamentos Parciais', formatNumber(parciais)],
+      ['Total a Receber', formatNumber(receber)],
+    ];
+    resumo.forEach(([label, v]) => {
+      body.push([{ content: label, colSpan: 8, styles: { halign: 'right' } }, v, '']);
+      kinds.push('resumo');
+    });
+
+    autoTable(doc, {
+      startY: 16,
+      margin: { left: M, right: M, bottom: 16 },
+      theme: 'plain',
+      styles: { font: 'helvetica', fontSize: 8, cellPadding: { top: 1.3, bottom: 1.3, left: 1.6, right: 1.6 }, textColor: [0, 0, 0], valign: 'middle', overflow: 'ellipsize' },
+      head: [['Emissão', 'Atraso', 'Bilhete', 'Mercadoria', 'Un', 'Quantidade', 'Preço', 'Total', 'Bilhete', 'Acumulado']],
+      headStyles: { fontStyle: 'bold', fillColor: [255, 255, 255], textColor: [0, 0, 0], lineWidth: { bottom: 0.3 }, lineColor: [0, 0, 0] },
+      body,
+      columnStyles: {
+        0: { cellWidth: 20 }, 1: { cellWidth: 14, halign: 'center' }, 2: { cellWidth: 26 }, 3: {}, 4: { cellWidth: 11 },
+        5: { halign: 'right', cellWidth: 24 }, 6: { halign: 'right', cellWidth: 24 }, 7: { halign: 'right', cellWidth: 26 },
+        8: { halign: 'right', cellWidth: 26 }, 9: { halign: 'right', cellWidth: 26 },
+      },
+      didParseCell: (d) => {
+        if (d.section === 'head') { d.cell.styles.halign = d.column.index >= 5 ? 'right' : d.column.index === 1 ? 'center' : 'left'; return; }
+        if (d.section !== 'body') return;
+        const k = kinds[d.row.index];
+        if (k === 'row' && d.column.index === 1 && d.cell.raw) d.cell.styles.textColor = [185, 28, 28];
+        if (k === 'sub' || k === 'resumo') { d.cell.styles.fillColor = GRAYBAND; d.cell.styles.fontStyle = 'bold'; }
+        if (k === 'gap') d.cell.styles.minCellHeight = 2.5;
+        if (k === 'resumo' && String((d.cell.raw as any)?.content || '').startsWith('Total a Receber')) d.cell.styles.textColor = [155, 28, 28];
+      },
+    });
+    const total = (doc as any).internal.getNumberOfPages();
+    for (let i = 1; i <= total; i++) {
+      doc.setPage(i);
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(...GRAY);
+      doc.text(`Distribuidora de Frutas Traviu - Página ${i} de ${total}`, PW / 2, 204, { align: 'center' });
+    }
+    return doc;
+  };
+
+  // um PDF por marca
+  const used = new Set<string>();
+  const nomeArquivo = (marca: string) => {
+    // só o nome da marca (tira apenas o que o sistema de arquivos não aceita)
+    const base = marca.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'SEM MARCA';
+    let nome = `${base}.pdf`;
+    for (let n = 2; used.has(nome.toLowerCase()); n++) nome = `${base} (${n}).pdf`;
+    used.add(nome.toLowerCase());
+    return nome;
+  };
+  const files = clients.map(({ marca, list }) => ({ nome: nomeArquivo(marca), doc: buildClientDoc(marca, list) }));
+  if (files.length === 1) {
+    files[0].doc.save(files[0].nome); // uma marca só: baixa o PDF direto
+  } else {
+    // várias marcas: um arquivo .zip com um PDF para cada marca (evita dezenas de downloads seguidos)
+    const entries = files.map((f) => ({ name: f.nome, data: new Uint8Array(f.doc.output('arraybuffer') as ArrayBuffer) }));
+    downloadBlob(buildZip(entries), `Extratos_${minOrders}_ou_Mais_Pedidos_${todayIso()}.zip`);
+  }
+  return { clientes: clients.length, itensLidos: lidos, semItens, motivo: falhas > 0 ? motivo : undefined };
+}
+
+function formatNumber(n: number): string {
+  return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 /* ------------------------------------------------------------------ */

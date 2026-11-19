@@ -358,3 +358,74 @@ test('lançamento repetido (timeout + reenvio, clique duplo) não duplica boleto
   const list = (await pedro.get('/api/orders')).data.filter((o: any) => o.marca === 'PEDDUP');
   assert.equal(list.length, 1);
 });
+
+test('itens do extrato: lê da foto uma vez, guarda no pedido, respeita permissões', async () => {
+  let chamadas = 0;
+  const mock = async () => { chamadas++; return { bilhete: '930957A', vencimento: '2026-11-17', itens: [
+    { codigo: '0000001', mercadoria: 'LARANJA PERA', un: 'CX', quantidade: 20, preco: 35, total: 700 },
+    { codigo: '0000003', mercadoria: 'LIMAO TAITI', un: 'CX', quantidade: 2, preco: 180, total: 360 } ] }; };
+  const a = createApp(new MemoryStore(), { sessionSecret: 'x', extractor: null, itemsExtractor: mock });
+  await a.state.load();
+  const srv = await new Promise<any>((r) => { const s = a.app.listen(0, () => r(s)); });
+  const b = `http://127.0.0.1:${srv.address().port}`;
+  const login = async (n: string, p: string) => {
+    const l = await fetch(b + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: n, password: p }) });
+    return (l.headers.get('set-cookie') || '').split(';')[0];
+  };
+  const call = (c: string, path: string, body: any = {}) => fetch(b + path, { method: 'POST', headers: { cookie: c, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const pc = await login('Pedro', '3220');
+  const mk = async (marca: string, vendedor: string, imageUrl: string) => (await (await call(pc, '/api/orders', { marca, data: '2026-11-07', valor: 1060, vendedor, imageUrl })).json());
+  const o1 = await mk('CJ+', 'Ricardo', PNG);
+  const o2 = await mk('SEM FOTO', 'Ricardo', '');
+  const o3 = await mk('DO WANDERLEY', 'Wanderley', PNG);
+
+  const r1 = await call(pc, `/api/orders/${o1.id}/itens`);
+  assert.equal(r1.status, 200);
+  const d1: any = await r1.json();
+  assert.equal(d1.itens.length, 2);
+  assert.equal(d1.bilhete, '930957A');
+  assert.equal(chamadas, 1);
+  // segunda vez usa o que já está salvo (não gasta IA)
+  const r1b: any = await (await call(pc, `/api/orders/${o1.id}/itens`)).json();
+  assert.equal(r1b.cached, true);
+  assert.equal(chamadas, 1);
+  // aparece no pedido e a lista continua igual para o resto
+  const lista: any[] = await (await fetch(b + '/api/orders', { headers: { cookie: pc } })).json();
+  assert.equal(lista.find((o) => o.id === o1.id).itens.length, 2);
+  assert.equal(lista.find((o) => o.id === o1.id).valor, 1060);
+  // sem foto
+  assert.equal((await call(pc, `/api/orders/${o2.id}/itens`)).status, 422);
+  // vendedor só lê os próprios pedidos
+  const rc = await login('Ricardo', '1234');
+  assert.equal((await call(rc, `/api/orders/${o3.id}/itens`)).status, 404);
+  assert.equal((await call(rc, `/api/orders/${o3.id}/itens`)).status, 404);
+  assert.equal((await call('', `/api/orders/${o1.id}/itens`)).status, 401);
+  srv.close();
+
+  // sem IA ativada
+  const off = createApp(new MemoryStore(), { sessionSecret: 'x', extractor: null, itemsExtractor: null });
+  await off.state.load();
+  const s2 = await new Promise<any>((r) => { const s = off.app.listen(0, () => r(s)); });
+  const b2 = `http://127.0.0.1:${s2.address().port}`;
+  const l2 = await fetch(b2 + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Pedro', password: '3220' }) });
+  const c2 = (l2.headers.get('set-cookie') || '').split(';')[0];
+  const mk2: any = await (await fetch(b2 + '/api/orders', { method: 'POST', headers: { cookie: c2, 'Content-Type': 'application/json' }, body: JSON.stringify({ marca: 'X', data: '2026-11-07', valor: 5, vendedor: 'Pedro', imageUrl: PNG }) })).json();
+  assert.equal((await fetch(b2 + `/api/orders/${mk2.id}/itens`, { method: 'POST', headers: { cookie: c2, 'Content-Type': 'application/json' }, body: '{}' })).status, 503);
+  s2.close();
+});
+
+test('extrator de itens Gemini: valida linhas, calcula total que falta e rejeita vazio', async () => {
+  const { makeGeminiItemsExtractor, ExtractError } = await import('../server/extract');
+  const resp = (obj: any): any => async () => ({ ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(obj) }] } }] }) });
+  const ex = makeGeminiItemsExtractor({ GEMINI_API_KEY: 'k', GEMINI_MODELS: 'm1', NODE_ENV: 'test' } as any,
+    resp({ bilhete: ' 932187A ', vencimento: '2026-11-27', itens: [
+      { codigo: '0000001', mercadoria: 'laranja pera', un: 'cx', quantidade: 5, preco: 32 },
+      { mercadoria: '', quantidade: 1, preco: 1 }, { mercadoria: 'LIXO', quantidade: 'abc', preco: 1 } ] }))!;
+  const out = await ex(PNG);
+  assert.equal(out.itens.length, 1);
+  assert.deepEqual(out.itens[0], { codigo: '0000001', mercadoria: 'LARANJA PERA', un: 'CX', quantidade: 5, preco: 32, total: 160 });
+  assert.equal(out.bilhete, '932187A');
+  assert.equal(out.vencimento, '2026-11-27');
+  const vazio = makeGeminiItemsExtractor({ GEMINI_API_KEY: 'k', GEMINI_MODELS: 'm1', NODE_ENV: 'test' } as any, resp({ itens: [] }))!;
+  await assert.rejects(() => vazio(PNG), (e: any) => e instanceof ExtractError);
+});

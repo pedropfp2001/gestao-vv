@@ -22,7 +22,7 @@ import { DailyBackupReminderModal } from './components/DailyBackupReminderModal'
 import { PWAInstallModal } from './components/PWAInstallModal';
 import { RefreshReminder } from './components/RefreshReminder';
 import { usePWAInstall } from './hooks/usePWAInstall';
-import { formatCurrency, generateOpenOrdersGridPDF, generateOverdueBoletosGridPDF, getFreshestBoletos, generateBothOpenOrdersReports, setReportUser } from './utils/pdfGenerator';
+import { formatCurrency, generateOpenOrdersGridPDF, generateOverdueBoletosGridPDF, generateExtratoClientesPDF, getFreshestBoletos, generateBothOpenOrdersReports, setReportUser } from './utils/pdfGenerator';
 import { safeFetch, getFailedSyncQueue, clearFailedSyncQueue, SyncErrorRecord } from './utils/apiClient';
 import { matchesOrderSearch } from './utils/searchHelper';
 import {
@@ -49,6 +49,7 @@ export default function App() {
   const { isInstalled, isIOS, canInstall, triggerInstall, showIOSModal, setShowIOSModal } = usePWAInstall();
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date>(() => new Date());
+  const [extratoBusy, setExtratoBusy] = useState<string | null>(null);
 
   // Sessão: vem do servidor (cookie assinado). Nenhuma senha fica no navegador.
   const [currentUser, setCurrentUserState] = useState<User | null>(null);
@@ -1115,6 +1116,25 @@ export default function App() {
                   className="px-4 py-2.5 bg-red-700 hover:bg-red-800 text-white rounded-2xl font-bold text-xs flex items-center gap-2 cursor-pointer"
                 >
                   <Download className="w-4 h-4" /> Boletos em Atraso
+                </button>
+                <button
+                  disabled={extratoBusy}
+                  onClick={async () => {
+                    setReportUser(cu.name);
+                    setExtratoBusy('Preparando…');
+                    try {
+                      const r = await generateExtratoClientesPDF(userVisibleOrders, 'download', 3, (d, t) => setExtratoBusy(`Lendo itens ${Math.min(d + 1, t)} de ${t}…`));
+                      if (r.semItens > 0) alert(`${r.semItens} pedido(s) saíram só com o valor total porque os itens não puderam ser lidos.${r.motivo ? '\nMotivo: ' + r.motivo : ''}\nTente de novo mais tarde: os que já foram lidos ficam salvos e não são lidos outra vez.`);
+                    } catch (e: any) {
+                      alert('Não foi possível gerar o extrato: ' + (e?.message || 'erro desconhecido'));
+                    } finally {
+                      setExtratoBusy(null);
+                    }
+                  }}
+                  className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white rounded-2xl font-bold text-xs flex items-center gap-2 cursor-pointer"
+                  title="Um PDF por marca (em um .zip) para quem tem 3 pedidos em aberto ou mais, com as mercadorias lidas da foto"
+                >
+                  <Download className="w-4 h-4" /> {extratoBusy || 'Extratos (3+ pedidos)'}
                 </button>
               </div>
             </div>

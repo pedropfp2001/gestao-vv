@@ -27,6 +27,15 @@ export interface BaixaItem {
   tipo?: 'parcial' | 'total';
 }
 
+export interface ItemPedido {
+  codigo?: string;
+  mercadoria: string;
+  un?: string;
+  quantidade: number;
+  preco: number;
+  total: number;
+}
+
 export interface Order {
   id: string;
   marca: string; // Marca/Cliente
@@ -43,6 +52,11 @@ export interface Order {
   observacaoBaixa?: string;
   valorPago?: number; // Total acumulado já pago/abatido
   historicoBaixas?: BaixaItem[]; // Histórico de baixas (parciais ou totais)
+  // Lidos da foto pela IA só quando o extrato precisa (não aparecem na tela principal)
+  itens?: ItemPedido[];
+  bilhete?: string;
+  vencimento?: string; // YYYY-MM-DD, só se estiver impresso no papel
+  itensLidosEm?: string;
 }
 
 export interface CustomerSummary {
