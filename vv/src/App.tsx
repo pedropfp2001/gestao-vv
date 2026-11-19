@@ -1123,7 +1123,7 @@ export default function App() {
                     setReportUser(cu.name);
                     setExtratoBusy('Preparando…');
                     try {
-                      const r = await generateExtratoClientesPDF(userVisibleOrders, 'download', 3, (d, t) => setExtratoBusy(`Lendo itens ${Math.min(d + 1, t)} de ${t}…`));
+                      const r = await generateExtratoClientesPDF(userVisibleOrders, 'download', 3, (d, t) => setExtratoBusy(`Lendo itens ${d} de ${t}…`));
                       if (r.semItens > 0) alert(`${r.semItens} pedido(s) saíram só com o valor total porque os itens não puderam ser lidos.${r.motivo ? '\nMotivo: ' + r.motivo : ''}\nTente de novo mais tarde: os que já foram lidos ficam salvos e não são lidos outra vez.`);
                     } catch (e: any) {
                       alert('Não foi possível gerar o extrato: ' + (e?.message || 'erro desconhecido'));
