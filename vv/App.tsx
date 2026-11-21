@@ -12,6 +12,7 @@ import { BatchSettlementModal } from './components/BatchSettlementModal';
 import { EditOrderModal } from './components/EditOrderModal';
 import { SettlementHistoryView } from './components/SettlementHistoryView';
 import { CustomerReportModal } from './components/CustomerReportModal';
+import { SelectBrandsReportModal } from './components/SelectBrandsReportModal';
 import { FinancialSummaryModal } from './components/FinancialSummaryModal';
 import { BrandSellersView } from './components/BrandSellersView';
 import { BackupModal } from './components/BackupModal';
@@ -50,6 +51,7 @@ export default function App() {
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date>(() => new Date());
   const [extratoBusy, setExtratoBusy] = useState<string | null>(null);
+  const [showBrandPicker, setShowBrandPicker] = useState(false);
 
   // Sessão: vem do servidor (cookie assinado). Nenhuma senha fica no navegador.
   const [currentUser, setCurrentUserState] = useState<User | null>(null);
@@ -1118,6 +1120,13 @@ export default function App() {
                   <Download className="w-4 h-4" /> Boletos em Atraso
                 </button>
                 <button
+                  onClick={() => setShowBrandPicker(true)}
+                  className="px-4 py-2.5 bg-white border-2 border-slate-900 text-slate-900 hover:bg-slate-100 rounded-2xl font-bold text-xs flex items-center gap-2 cursor-pointer"
+                  title="Escolha as marcas que devem sair no relatório"
+                >
+                  <Download className="w-4 h-4" /> Escolher marcas…
+                </button>
+                <button
                   disabled={extratoBusy}
                   onClick={async () => {
                     setReportUser(cu.name);
@@ -1140,6 +1149,9 @@ export default function App() {
             </div>
 
             <CustomerReportModal orders={userVisibleOrders} />
+            {showBrandPicker && (
+              <SelectBrandsReportModal orders={userVisibleOrders} onClose={() => setShowBrandPicker(false)} onBeforeGenerate={() => setReportUser(cu.name)} />
+            )}
             {showTotalPendente && (
               <FinancialSummaryModal
                 orders={userVisibleOrders}

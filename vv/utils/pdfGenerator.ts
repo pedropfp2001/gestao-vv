@@ -368,6 +368,64 @@ export async function generateOverdueBoletosGridPDF(
 }
 
 /* ------------------------------------------------------------------ */
+/* Relatório das marcas ESCOLHIDAS (mesmo layout de "Marcas com 1 pedido") */
+/* ------------------------------------------------------------------ */
+export async function generateSelectedBrandsPDF(
+  orders: Order[],
+  selectedBrands: string[],
+  action: 'download' | 'share' = 'download'
+) {
+  const wanted = new Set(selectedBrands.map((b) => b.trim().toUpperCase()));
+  const list = orders
+    .filter((o) => o.status === 'em_aberto' && saldo(o) > 0 && wanted.has(brandOf(o).toUpperCase()))
+    .sort((a, b) => brandOf(a).localeCompare(brandOf(b), 'pt-BR') || (a.data || '').localeCompare(b.data || ''));
+  const marcas = new Set(list.map((o) => brandOf(o).toUpperCase()));
+
+  const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+  headerBand(doc, 'RELATÓRIO DE PEDIDOS EM ABERTO POR MARCA', `Distribuidora Traviu - Marcas selecionadas (${marcas.size})`);
+  const filename = `Relatorio_Marcas_Selecionadas_${todayIso()}.pdf`;
+  if (list.length === 0) {
+    emptyReport(doc);
+    return finish(doc, filename, action);
+  }
+
+  const totalValor = list.reduce((s, o) => s + saldo(o), 0);
+  const media = Math.round(list.reduce((s, o) => s + computeOrderDiasAtraso(o.data), 0) / list.length);
+  // uma linha por pedido em aberto (código sequencial #MARCA-0001), igual ao relatório de 1 pedido
+  const rows = list.map((o, i) => [
+    `#${slug(brandOf(o))}-${String(i + 1).padStart(4, '0')}`,
+    brandOf(o),
+    formatDateBR(o.data),
+    diasLabel(computeOrderDiasAtraso(o.data)),
+    formatCurrency(saldo(o)),
+    sellerOf(o),
+  ]);
+  autoTable(doc, {
+    ...tableBase,
+    startY: 42,
+    head: [['Código', 'Marca / Cliente', 'Data Pedido', 'Dias em Atraso', 'Valor em Aberto (R$)', 'Vendedor']],
+    body: rows,
+    foot: [['TOTAL GERAL', `${marcas.size} ${marcas.size === 1 ? 'marca' : 'marcas'}`, '', `Média: ${media}d`, formatCurrency(totalValor), '']],
+    showFoot: 'lastPage',
+    footStyles: { fillColor: ROW_PINK, textColor: [155, 28, 28], fontStyle: 'bold', halign: 'center' },
+    columnStyles: {
+      0: { halign: 'center', textColor: [100, 116, 139], fontStyle: 'bold', cellWidth: 36 },
+      1: { fontStyle: 'bold' },
+      2: { halign: 'center', cellWidth: 24 },
+      3: { halign: 'center', textColor: [185, 28, 28], fontStyle: 'bold', cellWidth: 24 },
+      4: { halign: 'right', fontStyle: 'bold', cellWidth: 36 },
+      5: { halign: 'center', fontStyle: 'bold', cellWidth: 26 },
+    },
+    didParseCell: (d) => {
+      if (d.section === 'body' && d.row.index % 2 === 1) d.cell.styles.fillColor = [255, 255, 255];
+    },
+  });
+  const y = ((doc as any).lastAutoTable?.finalY || 60) + 10;
+  totalBar(doc, y, `TOTAL GERAL DE PEDIDOS EM ABERTO: ${list.length}`, `VALOR TOTAL CONSOLIDADO: ${formatCurrency(totalValor)}`);
+  return finish(doc, filename, action);
+}
+
+/* ------------------------------------------------------------------ */
 /* Extrato por marca (padrão "Emissão / Atraso / Bilhete / Mercadoria") */
 /* Um PDF por marca, só quem tem N ou mais pedidos em aberto.          */
 /* ------------------------------------------------------------------ */
