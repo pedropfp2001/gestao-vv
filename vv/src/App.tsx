@@ -23,7 +23,7 @@ import { DailyBackupReminderModal } from './components/DailyBackupReminderModal'
 import { PWAInstallModal } from './components/PWAInstallModal';
 import { RefreshReminder } from './components/RefreshReminder';
 import { usePWAInstall } from './hooks/usePWAInstall';
-import { formatCurrency, generateOpenOrdersGridPDF, generateOverdueBoletosGridPDF, generateExtratoClientesPDF, generateSelectedBrandsPDF, getFreshestBoletos, generateBothOpenOrdersReports, setReportUser } from './utils/pdfGenerator';
+import { formatCurrency, generateOpenOrdersGridPDF, generateOverdueBoletosGridPDF, generateExtratoClientesPDF, generateSelectedBrandsPDF, getFreshestBoletos, generateBothOpenOrdersReports, setReportUser, setSavedBrandsForReports } from './utils/pdfGenerator';
 import { safeFetch, getFailedSyncQueue, clearFailedSyncQueue, SyncErrorRecord } from './utils/apiClient';
 import { matchesOrderSearch } from './utils/searchHelper';
 import {
@@ -143,6 +143,8 @@ export default function App() {
     return () => { alive = false; clearInterval(t); };
   }, [currentUser?.name]);
 
+  useEffect(() => { setSavedBrandsForReports(savedBrands); }, [savedBrands]);
+
   const handleDownloadSavedBrands = async () => {
     if (!savedBrands.length) { setShowBrandPicker(true); return; }
     setDownloadingSaved(true);
@@ -164,7 +166,7 @@ export default function App() {
     try {
       setReportUser(cu.name);
       await generateBothOpenOrdersReports(ensureOrdersArray(orders).filter((o) => o.status === 'em_aberto'), 'download', undefined, boletosList);
-      setToastMessage({ message: '3 relatórios gerados (1 pedido, 2+ pedidos e boletos).', type: 'success' });
+      setToastMessage({ message: '3 relatórios gerados (1 pedido + selecionadas, 2+ pedidos e boletos).', type: 'success' });
     } catch (err) {
       console.error('Erro ao baixar relatórios consolidados:', err);
       setToastMessage({ message: 'Erro ao gerar os relatórios.', type: 'error' });

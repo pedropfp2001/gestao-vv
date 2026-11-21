@@ -847,14 +847,25 @@ export async function generateFinancialSummaryPDF(summaries: CustomerSummary[], 
 }
 
 /** Gera e baixa os 3 relatórios: 1 pedido, 2+ pedidos e boletos em atraso. */
+// Lista de marcas salva no sistema (definida pelo App); quando existe, o 1º PDF dos 3 relatórios passa a ser "1 pedido + selecionadas".
+let savedBrandsForAll: string[] = [];
+export function setSavedBrandsForReports(brands: string[]) { savedBrandsForAll = Array.isArray(brands) ? brands : []; }
+
 export async function generateAllReports(
   orders: Order[],
   boletos?: OverdueBoleto[],
   action: 'download' | 'share' = 'download',
   onProgress?: (msg: string) => void
 ) {
-  onProgress?.('Gerando relatório (1/3): Marcas com 1 Pedido...');
-  await generateOpenOrdersGridPDF(orders, action, '1_only');
+  const temLista = savedBrandsForAll.length > 0;
+  if (temLista) {
+    // 1º relatório = marcas com 1 pedido + marcas da lista salva (substitui o de "1 pedido" puro)
+    onProgress?.('Gerando relatório (1/3): Marcas com 1 Pedido + selecionadas...');
+    await generateSelectedBrandsPDF(orders, savedBrandsForAll, action, true);
+  } else {
+    onProgress?.('Gerando relatório (1/3): Marcas com 1 Pedido...');
+    await generateOpenOrdersGridPDF(orders, action, '1_only');
+  }
   await new Promise((r) => setTimeout(r, 800));
   onProgress?.('Gerando relatório (2/3): Marcas com 2 ou mais Pedidos...');
   await generateOpenOrdersGridPDF(orders, action, '2+');
