@@ -23,7 +23,7 @@ import { DailyBackupReminderModal } from './components/DailyBackupReminderModal'
 import { PWAInstallModal } from './components/PWAInstallModal';
 import { RefreshReminder } from './components/RefreshReminder';
 import { usePWAInstall } from './hooks/usePWAInstall';
-import { formatCurrency, generateOpenOrdersGridPDF, generateOverdueBoletosGridPDF, generateExtratoClientesPDF, getFreshestBoletos, generateBothOpenOrdersReports, setReportUser } from './utils/pdfGenerator';
+import { formatCurrency, generateOpenOrdersGridPDF, generateOverdueBoletosGridPDF, generateExtratoClientesPDF, generateSelectedBrandsPDF, getFreshestBoletos, generateBothOpenOrdersReports, setReportUser } from './utils/pdfGenerator';
 import { safeFetch, getFailedSyncQueue, clearFailedSyncQueue, SyncErrorRecord } from './utils/apiClient';
 import { matchesOrderSearch } from './utils/searchHelper';
 import {
@@ -52,6 +52,8 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState<Date>(() => new Date());
   const [extratoBusy, setExtratoBusy] = useState<string | null>(null);
   const [showBrandPicker, setShowBrandPicker] = useState(false);
+  const [savedBrands, setSavedBrands] = useState<string[]>([]);
+  const [downloadingSaved, setDownloadingSaved] = useState(false);
 
   // Sessão: vem do servidor (cookie assinado). Nenhuma senha fica no navegador.
   const [currentUser, setCurrentUserState] = useState<User | null>(null);
@@ -130,6 +132,31 @@ export default function App() {
     window.addEventListener('vv-unauthorized', onUnauthorized);
     return () => window.removeEventListener('vv-unauthorized', onUnauthorized);
   }, []);
+
+  // Lista de marcas salva no sistema (relatório do envio diário)
+  useEffect(() => {
+    if (!currentUser) return;
+    let alive = true;
+    const load = () => fetch('/api/report-brands').then((r) => r.ok ? r.json() : null).then((d) => { if (alive && d && Array.isArray(d.brands)) setSavedBrands(d.brands); }).catch(() => {});
+    load();
+    const t = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(t); };
+  }, [currentUser?.name]);
+
+  const handleDownloadSavedBrands = async () => {
+    if (!savedBrands.length) { setShowBrandPicker(true); return; }
+    setDownloadingSaved(true);
+    try {
+      setReportUser(cu.name);
+      await generateSelectedBrandsPDF(userVisibleOrders, savedBrands, 'download', true);
+      setToastMessage({ message: `Relatório gerado: ${savedBrands.length} marcas salvas + marcas com 1 pedido.`, type: 'success' });
+    } catch (err) {
+      console.error('Erro ao gerar relatório das marcas salvas:', err);
+      setToastMessage({ message: 'Erro ao gerar o relatório das marcas salvas.', type: 'error' });
+    } finally {
+      setDownloadingSaved(false);
+    }
+  };
 
   const handleQuickDownloadBothReports = async () => {
     const boletosList = Array.isArray(boletos) ? boletos : [];
@@ -772,6 +799,16 @@ export default function App() {
                     </button>
 
                     <button
+                      onClick={handleDownloadSavedBrands}
+                      disabled={downloadingSaved}
+                      className="px-2 sm:px-3 py-1 sm:py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-lg font-bold text-xs flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                      title="Baixa direto: marcas da lista salva + todas as marcas com 1 pedido em aberto hoje"
+                    >
+                      {downloadingSaved ? <Loader2 className="w-3 h-3 animate-spin" /> : <Layers className="w-3 h-3" />}
+                      <span>{savedBrands.length ? `Marcas salvas (${savedBrands.length})` : 'Escolher marcas'}</span>
+                    </button>
+
+                    <button
                       onClick={() => setIsOpenOrdersReportModalOpen(true)}
                       className="px-2 sm:px-3 py-1 sm:py-1.5 bg-red-50 hover:bg-red-100 text-red-900 border border-red-200/80 rounded-lg font-bold text-xs flex items-center gap-1 transition-all cursor-pointer"
                       title="Relatório de Pedidos em Aberto por Marca (Grade Analítica)"
@@ -1149,9 +1186,6 @@ export default function App() {
             </div>
 
             <CustomerReportModal orders={userVisibleOrders} />
-            {showBrandPicker && (
-              <SelectBrandsReportModal orders={userVisibleOrders} onClose={() => setShowBrandPicker(false)} onBeforeGenerate={() => setReportUser(cu.name)} />
-            )}
             {showTotalPendente && (
               <FinancialSummaryModal
                 orders={userVisibleOrders}
@@ -1179,6 +1213,9 @@ export default function App() {
       </footer>
 
       {/* Modals */}
+      {showBrandPicker && (
+        <SelectBrandsReportModal orders={userVisibleOrders} onClose={() => setShowBrandPicker(false)} onBeforeGenerate={() => setReportUser(cu.name)} savedBrands={savedBrands} canSave={cu.role === 'admin'} onSaved={setSavedBrands} />
+      )}
       <LoginModal
         currentUser={currentUser}
         isOpen={isLoginModalOpen}

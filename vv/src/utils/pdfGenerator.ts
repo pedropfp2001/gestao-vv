@@ -373,9 +373,18 @@ export async function generateOverdueBoletosGridPDF(
 export async function generateSelectedBrandsPDF(
   orders: Order[],
   selectedBrands: string[],
-  action: 'download' | 'share' = 'download'
+  action: 'download' | 'share' = 'download',
+  includeSingles = false
 ) {
   const wanted = new Set(selectedBrands.map((b) => b.trim().toUpperCase()));
+  if (includeSingles) {
+    // soma as marcas que, hoje, têm exatamente 1 pedido em aberto
+    const cont = new Map<string, number>();
+    orders
+      .filter((o) => o.status === 'em_aberto' && saldo(o) > 0)
+      .forEach((o) => cont.set(brandOf(o).toUpperCase(), (cont.get(brandOf(o).toUpperCase()) || 0) + 1));
+    cont.forEach((n, k) => { if (n === 1) wanted.add(k); });
+  }
   const list = orders
     .filter((o) => o.status === 'em_aberto' && saldo(o) > 0 && wanted.has(brandOf(o).toUpperCase()))
     .sort((a, b) => brandOf(a).localeCompare(brandOf(b), 'pt-BR') || (a.data || '').localeCompare(b.data || ''));

@@ -20,6 +20,8 @@ export class State {
   users = new Map<string, UserDoc>();
   ledger = new Map<string, any>();
   brandMap: Record<string, string> = {};
+  /** Marcas escolhidas para o relatório do envio diário (valem para todos os usuários). */
+  reportBrands: { brands: string[]; updatedAt?: string; updatedBy?: string } = { brands: [] };
   version = new Date().toISOString();
   ready = false;
 
@@ -35,7 +37,10 @@ export class State {
       s.watch('notifications', (t, id, d) => { t === 'remove' ? this.notifications.delete(id) : this.notifications.set(id, d); }),
       s.watch('users', (t, id, d) => { t === 'remove' ? this.users.delete(id) : this.users.set(id, d); }),
       s.watch('ledger', (t, id, d) => { t === 'remove' ? this.ledger.delete(id) : this.ledger.set(id, d); }),
-      s.watch('settings', (t, id, d) => { if (id === 'brandSellers') { this.brandMap = t === 'remove' ? {} : { ...(d?.map || {}) }; this.touch(); } }),
+      s.watch('settings', (t, id, d) => {
+        if (id === 'brandSellers') { this.brandMap = t === 'remove' ? {} : { ...(d?.map || {}) }; this.touch(); }
+        if (id === 'reportBrands') { this.reportBrands = t === 'remove' ? { brands: [] } : { brands: Array.isArray(d?.brands) ? d.brands : [], updatedAt: d?.updatedAt, updatedBy: d?.updatedBy }; }
+      }),
     ]);
     await this.ensureUsers();
     this.ready = true;

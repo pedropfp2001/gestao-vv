@@ -478,6 +478,25 @@ export function createApp(store: Store, opts: AppOptions) {
   }));
 
   /* ---------------------- marcas × vendedores ---------------------- */
+  // Lista de marcas do relatório do envio diário: todos leem; só a gestão altera.
+  app.get('/api/report-brands', (_req, res) => res.json(state.reportBrands));
+  app.put('/api/report-brands', requireGestao, wrap(async (req, res) => {
+    const raw = req.body?.brands;
+    if (!Array.isArray(raw)) return res.status(400).json({ error: 'Envie a lista de marcas.' });
+    const seen = new Set<string>();
+    const brands: string[] = [];
+    for (const b of raw) {
+      const t = String(b ?? '').trim().slice(0, 80);
+      if (!t || seen.has(t.toUpperCase())) continue;
+      seen.add(t.toUpperCase());
+      brands.push(t);
+      if (brands.length >= 500) break;
+    }
+    const doc = { brands, updatedAt: new Date().toISOString(), updatedBy: String(req.user) };
+    await store.set('settings', 'reportBrands', doc);
+    state.reportBrands = doc;
+    res.json(doc);
+  }));
   app.get('/api/brand-sellers', (_req, res) => res.json(state.brandMap));
   app.post('/api/brand-sellers', requireGestao, wrap(async (req, res) => {
     const { marca } = req.body || {};

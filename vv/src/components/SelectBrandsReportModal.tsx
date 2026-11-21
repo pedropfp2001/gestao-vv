@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { X, Search, Download, Share2, CheckSquare, Square } from 'lucide-react';
+import { X, Search, Download, Share2, CheckSquare, Square, Save } from 'lucide-react';
 import { Order } from '../types';
 import { formatCurrency, generateSelectedBrandsPDF } from '../utils/pdfGenerator';
 
@@ -8,15 +8,22 @@ interface Props {
   onClose: () => void;
   /** nome de quem gera o relatório (aparece no cabeçalho do PDF) */
   onBeforeGenerate?: () => void;
+  /** lista salva no sistema (vale para todos) */
+  savedBrands?: string[];
+  /** só a gestão pode salvar a lista */
+  canSave?: boolean;
+  onSaved?: (brands: string[]) => void;
 }
 
 const saldo = (o: Order) => Math.max(0, (o.valor || 0) - (o.valorPago || 0));
 const brandOf = (o: Order) => (o.marca || 'SEM MARCA').trim() || 'SEM MARCA';
 const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
-export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBeforeGenerate }) => {
+export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBeforeGenerate, savedBrands = [], canSave = false, onSaved }) => {
   const [query, setQuery] = useState('');
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(savedBrands.map((b) => b.trim().toUpperCase())));
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState<'download' | 'share' | null>(null);
 
   const brands = useMemo(() => {
@@ -28,10 +35,15 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
       cur.valor += saldo(o);
       map.set(k, cur);
     });
+    // marcas salvas que hoje não têm pedido em aberto continuam na lista (para poder desmarcar)
+    savedBrands.forEach((b) => {
+      const k = b.trim().toUpperCase();
+      if (k && !map.has(k)) map.set(k, { marca: b.trim(), pedidos: 0, valor: 0 });
+    });
     return [...map.entries()]
       .map(([key, v]) => ({ key, ...v }))
       .sort((a, b) => a.marca.localeCompare(b.marca, 'pt-BR'));
-  }, [orders]);
+  }, [orders, savedBrands]);
 
   const visible = brands.filter((b) => !query.trim() || norm(b.marca).includes(norm(query)));
   const chosen = brands.filter((b) => selected.has(b.key));
@@ -46,6 +58,19 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
     });
   const selectVisible = () => setSelected((prev) => new Set([...prev, ...visible.map((b) => b.key)]));
   const clearAll = () => setSelected(new Set());
+
+  const saveList = async () => {
+    setSaving(true); setSaveMsg(null);
+    try {
+      const r = await fetch('/api/report-brands', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ brands: chosen.map((b) => b.marca) }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d?.error || 'Não foi possível salvar.');
+      onSaved?.(d.brands || []);
+      setSaveMsg(`Lista salva (${(d.brands || []).length} marcas). Agora o botão "Marcas salvas" baixa direto.`);
+    } catch (e: any) {
+      setSaveMsg(e?.message || 'Não foi possível salvar.');
+    } finally { setSaving(false); }
+  };
 
   const generate = async (action: 'download' | 'share') => {
     if (!chosen.length) return;
@@ -103,7 +128,7 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
                       {on ? <CheckSquare className="w-5 h-5 text-red-700 shrink-0" /> : <Square className="w-5 h-5 text-slate-300 shrink-0" />}
                       <span className="flex-1 min-w-0">
                         <span className="block text-sm font-bold text-slate-900 truncate">{b.marca}</span>
-                        <span className="block text-[11px] text-slate-500">{b.pedidos} {b.pedidos === 1 ? 'pedido' : 'pedidos'} em aberto</span>
+                        <span className="block text-[11px] text-slate-500">{b.pedidos === 0 ? 'sem pedido em aberto agora' : `${b.pedidos} ${b.pedidos === 1 ? 'pedido' : 'pedidos'} em aberto`}</span>
                       </span>
                       <span className="text-sm font-black text-slate-800 tabular-nums">{formatCurrency(b.valor)}</span>
                     </button>
@@ -119,6 +144,18 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
             <span>{chosen.length} {chosen.length === 1 ? 'marca' : 'marcas'} · {totalPedidos} {totalPedidos === 1 ? 'pedido' : 'pedidos'}</span>
             <span className="text-red-800 text-sm font-black">{formatCurrency(totalValor)}</span>
           </div>
+          {canSave && (
+            <div>
+              <button
+                disabled={saving}
+                onClick={saveList}
+                className="w-full px-4 py-2 bg-white border-2 border-slate-300 hover:border-slate-500 disabled:opacity-50 text-slate-800 rounded-xl font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Save className="w-4 h-4" /> {saving ? 'Salvando…' : 'Salvar esta lista para o envio diário'}
+              </button>
+              {saveMsg && <p className="text-[11px] font-bold text-slate-600 mt-1.5">{saveMsg}</p>}
+            </div>
+          )}
           <div className="flex gap-2">
             <button
               disabled={!chosen.length || !!busy}

@@ -429,3 +429,17 @@ test('extrator de itens Gemini: valida linhas, calcula total que falta e rejeita
   const vazio = makeGeminiItemsExtractor({ GEMINI_API_KEY: 'k', GEMINI_MODELS: 'm1', NODE_ENV: 'test' } as any, resp({ itens: [] }))!;
   await assert.rejects(() => vazio(PNG), (e: any) => e instanceof ExtractError);
 });
+
+test('lista de marcas do relatório: todos leem, só a gestão salva, valores são limpos', async () => {
+  const pedro = await as('Pedro', '3220');
+  const ric = await as('Ricardo', '1234');
+  assert.deepEqual((await pedro.get('/api/report-brands')).data.brands, []);
+  const put = await pedro.put('/api/report-brands', { brands: [' AR ', 'ar', 'BAIANO', '', 'X'.repeat(200), 42] });
+  assert.equal(put.status, 200);
+  assert.equal(put.data.brands.length, 4); // AR (sem duplicar), BAIANO, X..., 42
+  assert.equal(put.data.brands[0], 'AR');
+  assert.equal(put.data.updatedBy, 'Pedro');
+  assert.equal((await ric.put('/api/report-brands', { brands: ['Z'] })).status, 403);
+  assert.deepEqual((await ric.get('/api/report-brands')).data.brands, put.data.brands);
+  assert.equal((await pedro.put('/api/report-brands', { brands: 'x' })).status, 400);
+});
