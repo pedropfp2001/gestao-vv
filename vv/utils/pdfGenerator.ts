@@ -398,24 +398,34 @@ async function carregarItens(
   let enabled = false;
   try { enabled = !!(await (await fetch('/api/extract-items/status')).json())?.enabled; } catch { /* sem IA */ }
   if (!enabled) return { itens: out, lidos, falhas: pendentes.length, motivo: 'A leitura por IA não está ativada (falta a chave GEMINI_API_KEY).' };
-  for (let i = 0; i < pendentes.length; i++) {
-    onProgress?.(i, pendentes.length);
-    const o = pendentes[i];
-    try {
-      const r = await fetch(`/api/orders/${encodeURIComponent(o.id)}/itens`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      const d = await r.json().catch(() => ({}));
-      if (r.ok && Array.isArray(d.itens) && d.itens.length) {
-        out.set(o.id, { itens: d.itens, bilhete: d.bilhete, vencimento: d.vencimento });
-        lidos++;
-      } else {
-        falhas++; motivo = motivo || d?.error;
-        if (r.status === 429) { falhas += pendentes.length - i - 1; break; } // limite da IA: não adianta insistir
+  // 3 fotos ao mesmo tempo (bem mais rápido que uma por vez, sem passar do limite gratuito da IA)
+  const PARALELO = 3;
+  let proximo = 0, concluidos = 0, limite = false;
+  const trabalhador = async () => {
+    while (!limite) {
+      const i = proximo++;
+      if (i >= pendentes.length) return;
+      const o = pendentes[i];
+      try {
+        const r = await fetch(`/api/orders/${encodeURIComponent(o.id)}/itens`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok && Array.isArray(d.itens) && d.itens.length) {
+          out.set(o.id, { itens: d.itens, bilhete: d.bilhete, vencimento: d.vencimento });
+          lidos++;
+        } else {
+          falhas++; motivo = motivo || d?.error;
+          if (r.status === 429) limite = true; // limite da IA: não adianta insistir
+        }
+      } catch {
+        falhas++; motivo = motivo || 'Sem conexão com o servidor.';
       }
-    } catch {
-      falhas++; motivo = motivo || 'Sem conexão com o servidor.';
+      concluidos++;
+      onProgress?.(concluidos, pendentes.length);
     }
-    await new Promise((res) => setTimeout(res, 1200)); // uma foto por vez, para respeitar o limite gratuito
-  }
+  };
+  onProgress?.(0, pendentes.length);
+  await Promise.all(Array.from({ length: Math.min(PARALELO, pendentes.length) }, trabalhador));
+  if (limite) falhas += Math.max(0, pendentes.length - concluidos); // o que ficou sem ler por causa do limite
   onProgress?.(pendentes.length, pendentes.length);
   return { itens: out, lidos, falhas, motivo };
 }
