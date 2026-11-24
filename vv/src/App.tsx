@@ -23,9 +23,9 @@ import { DailyBackupReminderModal } from './components/DailyBackupReminderModal'
 import { PWAInstallModal } from './components/PWAInstallModal';
 import { RefreshReminder } from './components/RefreshReminder';
 import { usePWAInstall } from './hooks/usePWAInstall';
-import { formatCurrency, generateOpenOrdersGridPDF, generateOverdueBoletosGridPDF, generateExtratoClientesPDF, generateSelectedBrandsPDF, getFreshestBoletos, generateBothOpenOrdersReports, setReportUser, setSavedBrandsForReports } from './utils/pdfGenerator';
+import { formatCurrency, generateOpenOrdersGridPDF, generateOverdueBoletosGridPDF, generateSelectedBrandsPDF, getFreshestBoletos, generateBothOpenOrdersReports, setReportUser, setSavedBrandsForReports } from './utils/pdfGenerator';
 import { safeFetch, getFailedSyncQueue, clearFailedSyncQueue, SyncErrorRecord } from './utils/apiClient';
-import { matchesOrderSearch } from './utils/searchHelper';
+import { matchesBrandOrValue as matchesOrderSearch } from './utils/searchHelper';
 import {
   Search,
   Filter,
@@ -50,7 +50,7 @@ export default function App() {
   const { isInstalled, isIOS, canInstall, triggerInstall, showIOSModal, setShowIOSModal } = usePWAInstall();
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date>(() => new Date());
-  const [extratoBusy, setExtratoBusy] = useState<string | null>(null);
+  const [showExtratoPicker, setShowExtratoPicker] = useState(false);
   const [showBrandPicker, setShowBrandPicker] = useState(false);
   const [savedBrands, setSavedBrands] = useState<string[]>([]);
   const [downloadingSaved, setDownloadingSaved] = useState(false);
@@ -569,7 +569,7 @@ export default function App() {
       />
 
       {/* Main Content Area (Compact on mobile) */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-2.5 sm:px-6 lg:px-8 py-2.5 sm:py-6 space-y-2.5 sm:space-y-6">
+      <main className="flex-1 max-w-[90rem] w-full mx-auto px-2.5 sm:px-6 lg:px-8 py-2.5 sm:py-6 space-y-2.5 sm:space-y-6">
         {/* User context bar (Slim & compact on mobile, full on desktop) */}
         <div className="bg-white rounded-xl sm:rounded-2xl border border-slate-200/90 p-2.5 sm:p-4 shadow-2xs flex flex-wrap items-center justify-between gap-2 sm:gap-4">
           <div className="flex items-center gap-2 min-w-0">
@@ -676,7 +676,37 @@ export default function App() {
 
         {/* TAB 1: Pedidos */}
         {activeTab === 'aberto' && (
-          <div className="space-y-2.5 sm:space-y-6">
+          <div className="lg:flex lg:items-start lg:gap-5">
+          {/* Menu lateral: baixar relatórios */}
+          <aside className="lg:w-60 lg:shrink-0 lg:sticky lg:top-20 mb-3 lg:mb-0 bg-white rounded-2xl border border-slate-200 shadow-2xs p-3">
+            <h3 className="text-[11px] font-black uppercase tracking-wider text-slate-500 px-1 mb-2">Baixar relatórios</h3>
+            <div className="grid grid-cols-2 lg:grid-cols-1 gap-2">
+              <button onClick={handleQuickDownloadBothReports} disabled={downloadingBothReports} className="text-left px-3 py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer" title="Baixa 3 relatórios: 1 pedido + selecionadas, 2 ou mais pedidos e boletos em atraso">
+                {downloadingBothReports ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <Layers className="w-4 h-4 shrink-0" />}
+                <span>3 Relatórios<span className="block text-[10px] font-semibold opacity-70">1 pedido + selecionadas, 2+ e Boletos</span></span>
+              </button>
+              <button onClick={handleDownloadSavedBrands} disabled={downloadingSaved} className="text-left px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer" title="Marcas da lista salva + marcas com 1 pedido hoje">
+                {downloadingSaved ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <Layers className="w-4 h-4 shrink-0" />}
+                <span>{savedBrands.length ? `Marcas salvas (${savedBrands.length})` : 'Marcas salvas'}<span className="block text-[10px] font-semibold opacity-70">1 clique, lista do sistema</span></span>
+              </button>
+              <button onClick={() => setShowBrandPicker(true)} className="text-left px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer">
+                <CheckCircle2 className="w-4 h-4 shrink-0" /><span>Escolher marcas…<span className="block text-[10px] font-semibold opacity-70">relatório das marcas marcadas</span></span>
+              </button>
+              <button onClick={() => setShowExtratoPicker(true)} className="text-left px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer">
+                <Download className="w-4 h-4 shrink-0" /><span>Relatórios…<span className="block text-[10px] font-semibold opacity-70">com mercadorias lidas da foto</span></span>
+              </button>
+              <button onClick={() => { setReportUser(cu.name); generateOpenOrdersGridPDF(userVisibleOrders, 'download', '1_only'); }} className="text-left px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer">
+                <Download className="w-4 h-4 shrink-0" /><span>Marcas com 1 Pedido</span>
+              </button>
+              <button onClick={async () => { setReportUser(cu.name); await generateOverdueBoletosGridPDF(await getFreshestBoletos(), 'download'); }} className="text-left px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer">
+                <Download className="w-4 h-4 shrink-0" /><span>Boletos em Atraso</span>
+              </button>
+              <button onClick={() => setIsOpenOrdersReportModalOpen(true)} className="text-left px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer" title="Relatório de Pedidos em Aberto por Marca (Grade)">
+                <TableIcon className="w-4 h-4 shrink-0" /><span>Relatório Grade</span>
+              </button>
+            </div>
+          </aside>
+          <div className="space-y-2.5 sm:space-y-6 flex-1 min-w-0">
             {/* Filter and stats toolbar */}
             <div className="bg-white rounded-xl sm:rounded-2xl border border-slate-200 p-2.5 sm:p-4 shadow-2xs space-y-2.5 sm:space-y-4">
               {/* Segmented Status Filter (Em Aberto / Baixados / Todos) */}
@@ -742,21 +772,20 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4">
-                {/* Search input with intelligent tolerance */}
-                <div className="relative flex-1">
-                  <Search className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-400 absolute left-2.5 top-2.5 sm:top-3" />
+              {/* Busca grande, só por marca ou valor */}
+                <div className="relative w-full">
+                  <Search className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Buscar marca/cliente, nº pedido (#18, PED-8668), data, valor, vendedor..."
-                    className="w-full pl-8 pr-8 py-1.5 sm:py-2 bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-800 placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs sm:text-sm"
+                    placeholder="Buscar por MARCA ou por VALOR  (ex.: RICARDO ou 1.250,00)"
+                    className="w-full pl-12 pr-10 py-3 sm:py-3.5 text-base sm:text-lg bg-slate-50 border border-slate-200 rounded-xl font-medium text-slate-800 placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs sm:text-sm"
                   />
                   {searchQuery && (
                     <button
                       onClick={() => setSearchQuery('')}
-                      className="absolute right-2.5 top-2.5 sm:top-3 text-slate-400 hover:text-slate-600 text-xs"
+                      className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs"
                       title="Limpar busca"
                     >
                       <X className="w-3.5 h-3.5" />
@@ -764,6 +793,7 @@ export default function App() {
                   )}
                 </div>
 
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4">
                 <div className="flex flex-wrap items-center justify-between sm:justify-start gap-1.5 sm:gap-3">
                   {/* Vendedor filter (only useful for admins) */}
                   {isAdmin && (
@@ -783,42 +813,6 @@ export default function App() {
                       </select>
                     </div>
                   )}
-
-                  {/* Open Orders Spreadsheet / Grid Report Button */}
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={handleQuickDownloadBothReports}
-                      disabled={downloadingBothReports}
-                      className="px-2 sm:px-3 py-1 sm:py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-lg font-bold text-xs flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
-                      title="Baixa automaticamente 3 relatórios: marcas com 1 pedido, marcas com 2 ou mais pedidos e boletos em atraso"
-                    >
-                      {downloadingBothReports ? (
-                        <Loader2 className="w-3 h-3 text-amber-800 animate-spin" />
-                      ) : (
-                        <Layers className="w-3 h-3 text-amber-800" />
-                      )}
-                      <span>Baixar 3 Relatórios (1, 2+ e Boletos)</span>
-                    </button>
-
-                    <button
-                      onClick={handleDownloadSavedBrands}
-                      disabled={downloadingSaved}
-                      className="px-2 sm:px-3 py-1 sm:py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-lg font-bold text-xs flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
-                      title="Baixa direto: marcas da lista salva + todas as marcas com 1 pedido em aberto hoje"
-                    >
-                      {downloadingSaved ? <Loader2 className="w-3 h-3 animate-spin" /> : <Layers className="w-3 h-3" />}
-                      <span>{savedBrands.length ? `Marcas salvas (${savedBrands.length})` : 'Escolher marcas'}</span>
-                    </button>
-
-                    <button
-                      onClick={() => setIsOpenOrdersReportModalOpen(true)}
-                      className="px-2 sm:px-3 py-1 sm:py-1.5 bg-red-50 hover:bg-red-100 text-red-900 border border-red-200/80 rounded-lg font-bold text-xs flex items-center gap-1 transition-all cursor-pointer"
-                      title="Relatório de Pedidos em Aberto por Marca (Grade Analítica)"
-                    >
-                      <TableIcon className="w-3 h-3 text-red-700" />
-                      <span>Relatório Grade</span>
-                    </button>
-                  </div>
 
                   {/* View Mode Toggle (Cards vs Lista) */}
                   <div className="flex items-center gap-0.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
@@ -1084,6 +1078,7 @@ export default function App() {
               />
             )}
           </div>
+          </div>
         )}
 
         {/* TAB 2: Vendedores por Marca */}
@@ -1166,23 +1161,11 @@ export default function App() {
                   <Download className="w-4 h-4" /> Escolher marcas…
                 </button>
                 <button
-                  disabled={extratoBusy}
-                  onClick={async () => {
-                    setReportUser(cu.name);
-                    setExtratoBusy('Preparando…');
-                    try {
-                      const r = await generateExtratoClientesPDF(userVisibleOrders, 'download', 3, (d, t) => setExtratoBusy(`Lendo itens ${d} de ${t}…`));
-                      if (r.semItens > 0) alert(`${r.semItens} pedido(s) saíram só com o valor total porque os itens não puderam ser lidos.${r.motivo ? '\nMotivo: ' + r.motivo : ''}\nTente de novo mais tarde: os que já foram lidos ficam salvos e não são lidos outra vez.`);
-                    } catch (e: any) {
-                      alert('Não foi possível gerar o extrato: ' + (e?.message || 'erro desconhecido'));
-                    } finally {
-                      setExtratoBusy(null);
-                    }
-                  }}
-                  className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white rounded-2xl font-bold text-xs flex items-center gap-2 cursor-pointer"
-                  title="Um PDF por marca (em um .zip) para quem tem 3 pedidos em aberto ou mais, com as mercadorias lidas da foto"
+                  onClick={() => setShowExtratoPicker(true)}
+                  className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-2xl font-bold text-xs flex items-center gap-2 cursor-pointer"
+                  title="Escolha as marcas: sai um PDF para cada uma, com as mercadorias lidas da foto"
                 >
-                  <Download className="w-4 h-4" /> {extratoBusy || 'Extratos (3+ pedidos)'}
+                  <Download className="w-4 h-4" /> Extratos (escolher marcas)
                 </button>
               </div>
             </div>
@@ -1215,6 +1198,7 @@ export default function App() {
       </footer>
 
       {/* Modals */}
+      {showExtratoPicker && <SelectBrandsReportModal mode="extrato" orders={userVisibleOrders} onClose={() => setShowExtratoPicker(false)} onBeforeGenerate={() => setReportUser(cu.name)} />}
       {showBrandPicker && (
         <SelectBrandsReportModal orders={userVisibleOrders} onClose={() => setShowBrandPicker(false)} onBeforeGenerate={() => setReportUser(cu.name)} savedBrands={savedBrands} canSave={cu.role === 'admin'} onSaved={setSavedBrands} />
       )}

@@ -2,7 +2,6 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Order, CustomerSummary, OverdueBoleto, ItemPedido } from '../types';
 import { sharePDFDoc } from './shareUtils';
-import { buildZip, downloadBlob } from './zipStore';
 import {
   formatCurrency,
   formatDateBR,
@@ -500,21 +499,24 @@ async function carregarItens(
 export async function generateExtratoClientesPDF(
   orders: Order[],
   action: 'download' | 'share' = 'download',
-  minOrders = 3,
+  /** lista de marcas escolhidas (qualquer quantidade de pedidos) ou um número = mínimo de pedidos em aberto */
+  selecao: string[] | number = 3,
   onProgress?: (done: number, total: number) => void
 ): Promise<ExtratoResultado> {
+  const minOrders = typeof selecao === 'number' ? selecao : 1;
+  const wanted = Array.isArray(selecao) ? new Set(selecao.map((b) => b.trim().toUpperCase())) : null;
   const open = orders.filter((o) => o.status === 'em_aberto' && saldo(o) > 0);
   const byBrand = new Map<string, Order[]>();
   open.forEach((o) => byBrand.set(brandOf(o), [...(byBrand.get(brandOf(o)) || []), o]));
   const clients = [...byBrand.entries()]
-    .filter(([, list]) => list.length >= minOrders)
+    .filter(([marca, list]) => (wanted ? wanted.has(marca.toUpperCase()) : list.length >= minOrders))
     .map(([marca, list]) => ({ marca, list: [...list].sort((a, b) => a.data.localeCompare(b.data) || a.id.localeCompare(b.id)) }))
     .sort((a, b) => a.marca.localeCompare(b.marca, 'pt-BR'));
 
-  const filename = `Relatorio_Extrato_${minOrders}_ou_Mais_Pedidos_${todayIso()}.pdf`;
+  const filename = `Relatorio_Extrato_${todayIso()}.pdf`;
   if (clients.length === 0) {
     const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
-    headerBand(doc, `EXTRATO POR CLIENTE (${minOrders}+ PEDIDOS)`, 'Distribuidora de Frutas Traviu');
+    headerBand(doc, 'EXTRATO POR CLIENTE', 'Distribuidora de Frutas Traviu');
     emptyReport(doc);
     await finish(doc, filename, action);
     return { clientes: 0, itensLidos: 0, semItens: 0 };
@@ -629,12 +631,10 @@ export async function generateExtratoClientesPDF(
     return nome;
   };
   const files = clients.map(({ marca, list }) => ({ nome: nomeArquivo(marca), doc: buildClientDoc(marca, list) }));
-  if (files.length === 1) {
-    files[0].doc.save(files[0].nome); // uma marca só: baixa o PDF direto
-  } else {
-    // várias marcas: um arquivo .zip com um PDF para cada marca (evita dezenas de downloads seguidos)
-    const entries = files.map((f) => ({ name: f.nome, data: new Uint8Array(f.doc.output('arraybuffer') as ArrayBuffer) }));
-    downloadBlob(buildZip(entries), `Extratos_${minOrders}_ou_Mais_Pedidos_${todayIso()}.zip`);
+  // um PDF separado por marca, baixados um após o outro (sem .zip)
+  for (let i = 0; i < files.length; i++) {
+    files[i].doc.save(files[i].nome);
+    if (i < files.length - 1) await new Promise((r) => setTimeout(r, 600));
   }
   return { clientes: clients.length, itensLidos: lidos, semItens, motivo: falhas > 0 ? motivo : undefined };
 }

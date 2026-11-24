@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { X, Search, Download, Share2, CheckSquare, Square, Save } from 'lucide-react';
 import { Order } from '../types';
-import { formatCurrency, generateSelectedBrandsPDF } from '../utils/pdfGenerator';
+import { formatCurrency, generateSelectedBrandsPDF, generateExtratoClientesPDF } from '../utils/pdfGenerator';
 
 interface Props {
   orders: Order[];
@@ -13,13 +13,19 @@ interface Props {
   /** só a gestão pode salvar a lista */
   canSave?: boolean;
   onSaved?: (brands: string[]) => void;
+  /** 'extrato' = um PDF por marca, com as mercadorias lidas das fotos pela IA */
+  mode?: 'resumo' | 'extrato';
 }
 
 const saldo = (o: Order) => Math.max(0, (o.valor || 0) - (o.valorPago || 0));
 const brandOf = (o: Order) => (o.marca || 'SEM MARCA').trim() || 'SEM MARCA';
 const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
-export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBeforeGenerate, savedBrands = [], canSave = false, onSaved }) => {
+export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBeforeGenerate, savedBrands: savedProp = [], canSave: canSaveProp = false, onSaved, mode = 'resumo' }) => {
+  const extrato = mode === 'extrato';
+  const savedBrands = extrato ? [] : savedProp;
+  const canSave = extrato ? false : canSaveProp;
+  const [progress, setProgress] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Set<string>>(() => new Set(savedBrands.map((b) => b.trim().toUpperCase())));
   const [saving, setSaving] = useState(false);
@@ -77,21 +83,30 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
     setBusy(action);
     try {
       onBeforeGenerate?.();
-      await generateSelectedBrandsPDF(orders, chosen.map((b) => b.marca), action);
+      if (extrato) {
+        setProgress('Preparando…');
+        const r = await generateExtratoClientesPDF(orders, 'download', chosen.map((b) => b.marca), (d, t) => setProgress(`Lendo itens ${d} de ${t}…`));
+        if (r.semItens > 0) alert(`${r.semItens} pedido(s) saíram só com o valor total porque os itens não puderam ser lidos.${r.motivo ? '\nMotivo: ' + r.motivo : ''}\nTente de novo mais tarde: os que já foram lidos ficam salvos e não são lidos outra vez.`);
+      } else {
+        await generateSelectedBrandsPDF(orders, chosen.map((b) => b.marca), action);
+      }
     } catch (e: any) {
       alert('Não foi possível gerar o relatório: ' + (e?.message || 'erro desconhecido'));
     } finally {
       setBusy(null);
+      setProgress(null);
     }
   };
+
+  const select3 = () => setSelected(new Set(brands.filter((b) => b.pedidos >= 3).map((b) => b.key)));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={onClose}>
       <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between p-5 border-b border-slate-100">
           <div>
-            <h3 className="text-base font-black text-slate-900">Relatório das marcas escolhidas</h3>
-            <p className="text-xs text-slate-500 mt-0.5">Marque as marcas e baixe o PDF no mesmo modelo de "Marcas com 1 Pedido".</p>
+            <h3 className="text-base font-black text-slate-900">{extrato ? 'Extratos com mercadorias (IA)' : 'Relatório das marcas escolhidas'}</h3>
+            <p className="text-xs text-slate-500 mt-0.5">{extrato ? 'Marque as marcas: sai um PDF para cada uma (sem .zip), com as mercadorias lidas das fotos.' : 'Marque as marcas e baixe o PDF no mesmo modelo de "Marcas com 1 Pedido".'}</p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer" aria-label="Fechar"><X className="w-5 h-5 text-slate-500" /></button>
         </div>
@@ -110,6 +125,7 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
             <button onClick={selectVisible} className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer">
               {query.trim() ? 'Marcar as encontradas' : 'Marcar todas'}
             </button>
+            {extrato && <button onClick={select3} className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer">Só 3+ pedidos</button>}
             <button onClick={clearAll} className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer">Limpar</button>
             <span className="ml-auto text-slate-500">{brands.length} marcas com pedido em aberto</span>
           </div>
@@ -162,15 +178,15 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
               onClick={() => generate('download')}
               className="flex-1 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
             >
-              <Download className="w-4 h-4" /> {busy === 'download' ? 'Gerando…' : 'Baixar PDF'}
+              <Download className="w-4 h-4" /> {busy === 'download' ? (progress || 'Gerando…') : extrato ? `Baixar ${chosen.length || ''} extrato${chosen.length === 1 ? '' : 's'}` : 'Baixar PDF'}
             </button>
-            <button
-              disabled={!chosen.length || !!busy}
+            {!extrato && (            <button
+                disabled={!chosen.length || !!busy}
               onClick={() => generate('share')}
               className="flex-1 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
             >
               <Share2 className="w-4 h-4" /> {busy === 'share' ? 'Gerando…' : 'Enviar por WhatsApp'}
-            </button>
+            </button>)}
           </div>
         </div>
       </div>

@@ -218,3 +218,24 @@ export function matchesBoletoSearch(
 
   return queryTokens.every((token) => combinedSearchable.includes(token));
 }
+
+
+/** Busca só por MARCA ou por VALOR (não olha vendedor, data nem número do pedido). */
+export function matchesBrandOrValue(order: { marca?: string; valor?: number; valorPago?: number }, query: string): boolean {
+  const q = (query || '').trim();
+  if (!q) return true;
+  // parece um valor? (só dígitos, pontos, vírgulas, "R$")
+  const soNumero = q.replace(/r\$|\s/gi, '');
+  if (/^[\d.,]+$/.test(soNumero)) {
+    const alvo = Number(soNumero.replace(/\./g, '').replace(',', '.'));
+    const valor = Number(order.valor || 0);
+    const saldo = Math.max(0, valor - Number(order.valorPago || 0));
+    if (!Number.isNaN(alvo) && (Math.abs(valor - alvo) < 0.005 || Math.abs(saldo - alvo) < 0.005)) return true;
+    // também aceita parte do valor digitada (ex.: "1.98" acha 1.984,00)
+    const fmt = (n: number) => n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return fmt(valor).includes(soNumero) || fmt(saldo).includes(soNumero);
+  }
+  const norm = (t: string) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const marca = norm(order.marca || '');
+  return norm(q).split(' ').filter(Boolean).every((tok) => marca.includes(tok));
+}
