@@ -25,7 +25,7 @@ const saldo = (o: Order) => Math.max(0, (o.valor || 0) - (o.valorPago || 0));
 const brandOf = (o: Order) => (o.marca || 'SEM MARCA').trim() || 'SEM MARCA';
 const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
-export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBeforeGenerate, savedBrands: savedProp = [], canSave: canSaveProp = false, onSaved, mode = 'resumo', canEditItens = false }) => {
+export const SelectBrandsReportModal: React.FC<Props> = ({ orders: ordersAll, onClose, onBeforeGenerate, savedBrands: savedProp = [], canSave: canSaveProp = false, onSaved, mode = 'resumo', canEditItens = false }) => {
   const extrato = mode === 'extrato';
   const savedBrands = extrato ? [] : savedProp;
   const canSave = extrato ? false : canSaveProp;
@@ -37,6 +37,17 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState<'download' | 'share' | null>(null);
+  // filtro pela DATA DO PEDIDO (só no relatório com mercadorias); em branco = todas as datas
+  const [de, setDe] = useState('');
+  const [ate, setAte] = useState('');
+  const ini = de && ate && de > ate ? ate : de;
+  const fim = de && ate && de > ate ? de : ate;
+  const orders = useMemo(
+    () => (extrato && (ini || fim) ? ordersAll.filter((o) => (!ini || (o.data || '') >= ini) && (!fim || (o.data || '') <= fim)) : ordersAll),
+    [ordersAll, extrato, ini, fim]
+  );
+  const br = (iso: string) => (iso ? iso.split('-').reverse().join('/') : '');
+  const periodo = extrato && (ini || fim) ? (ini && fim ? `Pedidos de ${br(ini)} a ${br(fim)}` : ini ? `Pedidos a partir de ${br(ini)}` : `Pedidos até ${br(fim)}`) : undefined;
 
   const brands = useMemo(() => {
     const map = new Map<string, { marca: string; pedidos: number; valor: number }>();
@@ -125,7 +136,7 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
     setBusy('download');
     try {
       setProgress('Gerando PDFs…');
-      await runReport(() => generateExtratoClientesPDF(orders, 'download', revisao.grupos.map((g) => g.marca), undefined, itensFinal));
+      await runReport(() => generateExtratoClientesPDF(orders, 'download', revisao.grupos.map((g) => g.marca), undefined, itensFinal, periodo));
       setRevisao(null);
     } finally { setBusy(null); setProgress(null); }
   };
@@ -154,13 +165,28 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
               className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-slate-300"
             />
           </div>
+          {extrato && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs font-bold text-slate-600">
+                <span>Data do pedido:</span>
+                <label className="flex items-center gap-1.5">de
+                  <input type="date" value={de} onChange={(e) => setDe(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold bg-white" />
+                </label>
+                <label className="flex items-center gap-1.5">até
+                  <input type="date" value={ate} onChange={(e) => setAte(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold bg-white" />
+                </label>
+                {(de || ate) && <button onClick={() => { setDe(''); setAte(''); }} className="px-2 py-1 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 cursor-pointer">Todas as datas</button>}
+              </div>
+              <p className="text-[11px] font-medium text-slate-500 mt-1.5">{periodo ? `${periodo}: só entram os pedidos em aberto lançados nesse período.` : 'Em branco = todos os pedidos em aberto, de qualquer data.'}</p>
+            </div>
+          )}
           <div className="flex items-center gap-2 text-xs font-bold">
             <button onClick={selectVisible} className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer">
               {query.trim() ? 'Marcar as encontradas' : 'Marcar todas'}
             </button>
             {extrato && <button onClick={select3} className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer">Só 3+ pedidos</button>}
             <button onClick={clearAll} className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer">Limpar</button>
-            <span className="ml-auto text-slate-500">{brands.length} marcas com pedido em aberto</span>
+            <span className="ml-auto text-slate-500">{brands.length} marcas com pedido em aberto{periodo ? ' no período' : ''}</span>
           </div>
         </div>
 

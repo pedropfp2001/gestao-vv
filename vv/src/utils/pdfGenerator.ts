@@ -504,7 +504,9 @@ export async function generateExtratoClientesPDF(
   selecao: string[] | number = 3,
   onProgress?: (done: number, total: number) => void,
   /** itens já lidos e conferidos (se vier, não lê de novo) */
-  itensPre?: Map<string, { itens: ItemPedido[]; bilhete?: string; vencimento?: string }>
+  itensPre?: Map<string, { itens: ItemPedido[]; bilhete?: string; vencimento?: string }>,
+  /** texto do período filtrado pela data do pedido, ex.: "Pedidos de 01/11/2026 a 15/11/2026" */
+  periodo?: string
 ): Promise<ExtratoResultado> {
   const minOrders = typeof selecao === 'number' ? selecao : 1;
   const wanted = Array.isArray(selecao) ? new Set(selecao.map((b) => b.trim().toUpperCase())) : null;
@@ -546,7 +548,7 @@ export async function generateExtratoClientesPDF(
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7);
     doc.setTextColor(100, 116, 139);
-    doc.text(`Gerado por ${reportUser} em ${stamp()}`, PW - M, 12, { align: 'right' });
+    doc.text(`${periodo ? periodo + '  |  ' : ''}Gerado por ${reportUser} em ${stamp()}`, PW - M, 12, { align: 'right' });
 
     const body: any[][] = [];
     const kinds: string[] = [];
