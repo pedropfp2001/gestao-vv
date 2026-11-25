@@ -32,8 +32,8 @@ Regras:
 4. "vendedor": Pedro, Daniel, Igor, Ricardo ou Wanderley, se aparecer; senão vazio.`;
 
 /** Chama o Gemini com imagem, tentando cada modelo da lista e devolvendo o JSON validado por `parse`. */
-function makeGeminiCaller(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch) {
-  const key = env.GEMINI_API_KEY;
+function makeGeminiCaller(env: NodeJS.ProcessEnv, fetchImpl: typeof fetch, keyVars: string[] = ['GEMINI_API_KEY']) {
+  const key = keyVars.map((k) => env[k]).find(Boolean);
   if (!key) return null;
   const models = (env.GEMINI_MODELS || '').split(',').map((s) => s.trim()).filter(Boolean);
   const list = models.length ? models : DEFAULT_MODELS;
@@ -133,7 +133,7 @@ Regras:
 const num = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : NaN; };
 
 export function makeGeminiItemsExtractor(env: NodeJS.ProcessEnv = process.env, fetchImpl: typeof fetch = fetch): ItemsExtractor | null {
-  const call = makeGeminiCaller(env, fetchImpl);
+  const call = makeGeminiCaller(env, fetchImpl, ['GEMINI_ITEMS_API_KEY', 'GEMINI_API_KEY']); // chave própria para os itens (relatórios/pré-leitura); se não houver, usa a principal
   if (!call) return null;
   const schema = {
     type: 'OBJECT',

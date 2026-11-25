@@ -283,24 +283,37 @@ export function createApp(store: Store, opts: AppOptions) {
   };
   const jaLido = (o: any) => Array.isArray(o.itens) && o.itens.length > 0;
   const prefetchPendentes = () => prefetchAlvo().filter((o: any) => !jaLido(o));
+  const hojeSP = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+  const usoHoje = () => {
+    if (state.prefetchUso.dia !== hojeSP()) state.prefetchUso = { dia: hojeSP(), usados: 0, esgotado: false };
+    return state.prefetchUso;
+  };
+  const salvarUso = async () => { try { await store.set('settings', 'prefetchUso', { ...state.prefetchUso }); } catch { /* o contador em memória continua valendo */ } };
   async function runPrefetch(): Promise<typeof prefetchInfo> {
     if (!itemsExtractor || !state.ready || prefetchInfo.rodando) return prefetchInfo;
+    const uso = usoHoje();
+    const teto = state.prefetchConfig.limiteDia;
     prefetchInfo.rodando = true; prefetchInfo.lidosNaUltima = 0; prefetchInfo.motivo = ''; prefetchInfo.fila = 0; prefetchInfo.feitos = 0;
     try {
+      if (uso.esgotado) { prefetchInfo.motivo = 'O Gemini avisou que o limite do dia acabou. A pré-leitura volta amanhã.'; return prefetchInfo; }
+      if (uso.usados >= teto) { prefetchInfo.motivo = `Teto de ${teto} leituras do dia atingido. O resto do limite fica para o lançamento por IA.`; return prefetchInfo; }
       const agora = Date.now();
-      const fila = prefetchPendentes().filter((o: any) => agora - (prefetchFail.get(o.id) || 0) > 6 * 3600 * 1000).slice(0, PREFETCH_PER_RUN);
+      const fila = prefetchPendentes().filter((o: any) => agora - (prefetchFail.get(o.id) || 0) > 6 * 3600 * 1000).slice(0, Math.min(PREFETCH_PER_RUN, teto - uso.usados));
       prefetchInfo.fila = fila.length;
       for (const o of fila) {
         try {
           const r = await lerItens(o);
-          if (r) prefetchInfo.lidosNaUltima++; else prefetchFail.set(o.id, Date.now()); // sem foto
+          if (r) { prefetchInfo.lidosNaUltima++; uso.usados++; } else prefetchFail.set(o.id, Date.now()); // sem foto: não gasta chamada
         } catch (e: any) {
-          prefetchFail.set(o.id, Date.now());
-          if (e instanceof ExtractError && (e.status === 429 || e.status === 403 || e.status === 400)) { prefetchInfo.motivo = e.message; break; } // limite/chave: para e tenta mais tarde
+          prefetchFail.set(o.id, Date.now()); uso.usados++;
+          if (e instanceof ExtractError && e.status === 429) { uso.esgotado = true; prefetchInfo.motivo = e.message; break; } // limite acabou: para até amanhã
+          if (e instanceof ExtractError && (e.status === 403 || e.status === 400)) { prefetchInfo.motivo = e.message; break; } // chave com problema
         }
         prefetchInfo.feitos++;
+        if (uso.usados >= teto) break;
         if (PREFETCH_GAP_MS) await new Promise((r) => setTimeout(r, PREFETCH_GAP_MS));
       }
+      await salvarUso();
     } finally { prefetchInfo.rodando = false; prefetchInfo.ultimaExecucao = new Date().toISOString(); }
     return prefetchInfo;
   }
@@ -309,6 +322,7 @@ export function createApp(store: Store, opts: AppOptions) {
     const pendentes = alvo.filter((o: any) => !jaLido(o)).length;
     res.json({
       ativo: !!itemsExtractor, total: alvo.length, lidos: alvo.length - pendentes, pendentes, ...prefetchInfo,
+      chaveSeparada: !!process.env.GEMINI_ITEMS_API_KEY, usoHoje: usoHoje().usados, limiteDia: state.prefetchConfig.limiteDia, esgotado: usoHoje().esgotado,
       naJanela: dentroDaJanela(state.prefetchConfig), config: state.prefetchConfig, agora: new Date().toISOString(),
     });
   });

@@ -15,5 +15,7 @@ services:
         generateValue: true
       - key: FIREBASE_SERVICE_ACCOUNT_B64
         sync: false
+      - key: GEMINI_ITEMS_API_KEY   # opcional: chave só para os relatórios/pré-leitura (de outro projeto do Google)
+        sync: false
       - key: GEMINI_API_KEY
         sync: false

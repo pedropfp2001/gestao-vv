@@ -65,4 +65,8 @@ Com a IA ligada (`GEMINI_API_KEY`), o servidor lê sozinho, em segundo plano, as
 
 ### Horário da pré-leitura
 
-A pré-leitura roda sozinha a cada 10 minutos **só dentro do horário configurado** (padrão: seg–sex 8h–19h, sábado 8h–13h, domingo desligado, fuso de São Paulo). O horário é editado pelo ícone de engrenagem no painel "Pré-leitura" (visível só para os usuários de teste definidos em `isBeta` no `src/App.tsx`; a pré-visualização dos PDFs vale para todos). No plano gratuito do Render o site "dorme" sem acessos: para ele estar acordado às 8h, use um monitor gratuito (UptimeRobot ou cron-job.org) chamando `https://SEU-SITE.onrender.com/api/status` a cada 10 minutos.
+A pré-leitura roda sozinha a cada 10 minutos **só dentro do horário configurado** (padrão: seg–sex 8h–17h, sábado 8h–13h, domingo desligado, fuso de São Paulo). O horário é editado pelo ícone de engrenagem no painel "Pré-leitura" (visível só para os usuários de teste definidos em `isBeta` no `src/App.tsx`; a pré-visualização dos PDFs vale para todos). No plano gratuito do Render o site "dorme" sem acessos: para ele estar acordado às 8h, use um monitor gratuito (UptimeRobot ou cron-job.org) chamando `https://SEU-SITE.onrender.com/api/status` a cada 10 minutos.
+
+### Chave separada para os relatórios (opcional)
+
+Para a pré-leitura/relatórios nunca consumirem o limite do lançamento por IA, crie uma segunda chave **em outro projeto do Google** (no AI Studio: *Get API key → Create API key → Create API key in new project*) e coloque-a no Render em `GEMINI_ITEMS_API_KEY`. O limite do Gemini é por **projeto**, não por chave: duas chaves do mesmo projeto dividem o mesmo limite. Sem `GEMINI_ITEMS_API_KEY`, tudo usa a `GEMINI_API_KEY`.

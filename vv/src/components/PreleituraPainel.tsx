@@ -5,7 +5,8 @@ interface Janela { inicio: number; fim: number }
 interface Status {
   ativo: boolean; total: number; lidos: number; pendentes: number; rodando: boolean; fila: number; feitos: number;
   ultimaExecucao: string | null; lidosNaUltima: number; motivo: string; naJanela: boolean;
-  config: { semana: Janela; sabado: Janela; domingo: boolean };
+  usoHoje: number; limiteDia: number; esgotado: boolean; chaveSeparada: boolean;
+  config: { semana: Janela; sabado: Janela; domingo: boolean; limiteDia: number };
 }
 
 const hhmm = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' }) : '—');
@@ -68,6 +69,12 @@ export const PreleituraPainel: React.FC = () => {
             <p className="text-[11px] text-slate-600">{st.naJanela ? `Faltam ${st.pendentes}. A próxima rodada é automática (a cada 10 min).` : `Faltam ${st.pendentes}. Fora do horário automático.`}</p>
           )}
           {st.motivo && <p className="text-[11px] font-bold text-amber-800 flex gap-1.5"><AlertTriangle className="w-3.5 h-3.5 shrink-0" /><span>Parou: {st.motivo}</span></p>}
+          <div>
+            <div className="flex justify-between text-[11px] font-bold text-slate-600 mb-1"><span>Leituras de hoje</span><span>{st.usoHoje} de {st.limiteDia}</span></div>
+            <div className="h-1.5 rounded-full bg-slate-200 overflow-hidden"><div className={`h-full transition-all ${st.usoHoje >= st.limiteDia || st.esgotado ? 'bg-amber-500' : 'bg-slate-500'}`} style={{ width: `${Math.min(100, st.limiteDia ? Math.round((st.usoHoje / st.limiteDia) * 100) : 100)}%` }} /></div>
+            <p className="text-[10px] text-slate-400 mt-1">{st.chaveSeparada ? 'Chave própria dos relatórios: o lançamento por IA não é afetado.' : 'Usa a mesma chave do lançamento por IA.'}</p>
+          </div>
+          {st.esgotado && <p className="text-[11px] font-bold text-amber-800 flex gap-1.5"><AlertTriangle className="w-3.5 h-3.5 shrink-0" /><span>O Gemini avisou que o limite do dia acabou. A pré-leitura volta amanhã.</span></p>}
           <p className="text-[10px] text-slate-400">Última rodada: {hhmm(st.ultimaExecucao)}{st.ultimaExecucao ? ` (${st.lidosNaUltima} lidos)` : ''}</p>
           <button disabled={st.rodando || st.pendentes === 0} onClick={lerAgora} className="w-full px-3 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-40 text-[11px] font-bold text-slate-700 flex items-center justify-center gap-1.5 cursor-pointer"><Play className="w-3 h-3" /> Ler agora</button>
         </>
@@ -78,6 +85,7 @@ export const PreleituraPainel: React.FC = () => {
           <p className="font-bold">Horário automático (hora cheia)</p>
           <div className="flex items-center gap-1.5">Seg–sex: <input className={num} type="number" min={0} max={23} value={cfg.semana.inicio} onChange={(e) => setJ('semana', 'inicio', e.target.value)} /> às <input className={num} type="number" min={0} max={23} value={cfg.semana.fim} onChange={(e) => setJ('semana', 'fim', e.target.value)} /> h</div>
           <div className="flex items-center gap-1.5">Sábado: <input className={num} type="number" min={0} max={23} value={cfg.sabado.inicio} onChange={(e) => setJ('sabado', 'inicio', e.target.value)} /> às <input className={num} type="number" min={0} max={23} value={cfg.sabado.fim} onChange={(e) => setJ('sabado', 'fim', e.target.value)} /> h</div>
+          <div className="flex items-center gap-1.5">Teto por dia: <input className={num} type="number" min={0} max={2000} value={cfg.limiteDia} onChange={(e) => setCfg({ ...cfg, limiteDia: Number(e.target.value) })} /> leituras</div>
           <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" checked={cfg.domingo} onChange={(e) => setCfg({ ...cfg, domingo: e.target.checked })} /> Rodar também no domingo</label>
           <button onClick={salvar} disabled={salvando} className="w-full px-3 py-1.5 rounded-lg bg-slate-900 text-white font-bold cursor-pointer disabled:opacity-50">{salvando ? 'Salvando…' : 'Salvar horários'}</button>
         </div>

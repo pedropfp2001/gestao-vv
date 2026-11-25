@@ -558,12 +558,12 @@ test('pré-leitura: lê só marcas da lista salva ou com 3+ pedidos, uma vez, e 
 });
 
 test('horário da pré-leitura: semana, sábado mais curto, domingo desligado (fuso de São Paulo)', async () => {
-  const cfg = DEFAULT_PREFETCH_CONFIG; // seg-sex 8-19, sáb 8-13, dom off
+  const cfg = DEFAULT_PREFETCH_CONFIG; // seg-sex 8-17, sáb 8-13, dom off
   const sp = (iso: string) => new Date(iso); // UTC-3: 11:00Z = 08:00 em SP
   assert.equal(dentroDaJanela(cfg, sp('2026-11-23T10:59:00Z')), false); // segunda 07:59
   assert.equal(dentroDaJanela(cfg, sp('2026-11-23T11:00:00Z')), true);  // segunda 08:00
-  assert.equal(dentroDaJanela(cfg, sp('2026-11-23T21:59:00Z')), true);  // segunda 18:59
-  assert.equal(dentroDaJanela(cfg, sp('2026-11-23T22:00:00Z')), false); // segunda 19:00
+  assert.equal(dentroDaJanela(cfg, sp('2026-11-23T19:59:00Z')), true);  // segunda 16:59
+  assert.equal(dentroDaJanela(cfg, sp('2026-11-23T20:00:00Z')), false); // segunda 17:00
   assert.equal(dentroDaJanela(cfg, sp('2026-11-28T15:59:00Z')), true);  // sábado 12:59
   assert.equal(dentroDaJanela(cfg, sp('2026-11-28T16:00:00Z')), false); // sábado 13:00 (turno curto)
   assert.equal(dentroDaJanela(cfg, sp('2026-11-29T15:00:00Z')), false); // domingo 12:00
@@ -576,11 +576,24 @@ test('configuração do horário e status da pré-leitura: só a gestão; valore
   assert.equal((await ric.get('/api/prefetch/status')).status, 403);
   assert.equal((await ric.put('/api/prefetch/config', { semana: { inicio: 9, fim: 17 } })).status, 403);
   const ok = (await pedro.put('/api/prefetch/config', { semana: { inicio: 7, fim: 25 }, sabado: { inicio: 10, fim: 9 }, domingo: true })).data;
-  assert.equal(ok.semana.inicio, 7); assert.equal(ok.semana.fim, 19);   // 25 inválido -> padrão
+  assert.equal(ok.semana.inicio, 7); assert.equal(ok.semana.fim, 17);   // 25 inválido -> padrão
   assert.ok(ok.sabado.fim > ok.sabado.inicio);                          // fim <= início é corrigido
   assert.equal(ok.domingo, true);
   const st = (await pedro.get('/api/prefetch/status')).data;
   for (const k of ['ativo', 'pendentes', 'total', 'lidos', 'rodando', 'naJanela', 'config']) assert.ok(k in st, k);
   assert.equal(st.config.semana.inicio, 7);
   await pedro.put('/api/prefetch/config', DEFAULT_PREFETCH_CONFIG);
+});
+
+test('chave própria para os itens: usa GEMINI_ITEMS_API_KEY quando existe e cai na principal quando não', async () => {
+  const { makeGeminiItemsExtractor } = await import('../server/extract');
+  const vistas: string[] = [];
+  const fakeFetch: any = async (_u: string, init: any) => { vistas.push(init.headers['x-goog-api-key']); return { ok: true, status: 200, text: async () => '', json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({ itens: [{ mercadoria: 'A', quantidade: 1, preco: 1, total: 1 }] }) }] } }] }) }; };
+  const img = PNG;
+  await makeGeminiItemsExtractor({ GEMINI_API_KEY: 'principal', GEMINI_ITEMS_API_KEY: 'itens', GEMINI_MODELS: 'm1' } as any, fakeFetch)!(img);
+  await makeGeminiItemsExtractor({ GEMINI_API_KEY: 'principal', GEMINI_MODELS: 'm1' } as any, fakeFetch)!(img);
+  assert.deepEqual(vistas, ['itens', 'principal']);
+  const so = makeGeminiItemsExtractor({ GEMINI_ITEMS_API_KEY: 'itens', GEMINI_MODELS: 'm1' } as any, fakeFetch);
+  assert.ok(so);
+  assert.equal(makeGeminiItemsExtractor({ GEMINI_MODELS: 'm1' } as any, fakeFetch), null);
 });

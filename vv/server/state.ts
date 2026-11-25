@@ -17,8 +17,9 @@ export interface PrefetchConfig {
   semana: { inicio: number; fim: number };  // seg a sex
   sabado: { inicio: number; fim: number };  // turno mais curto
   domingo: boolean;                         // roda no domingo?
+  limiteDia: number;                        // teto de leituras por dia só da pré-leitura (deixa o resto do limite para o lançamento)
 }
-export const DEFAULT_PREFETCH_CONFIG: PrefetchConfig = { semana: { inicio: 8, fim: 19 }, sabado: { inicio: 8, fim: 13 }, domingo: false };
+export const DEFAULT_PREFETCH_CONFIG: PrefetchConfig = { semana: { inicio: 8, fim: 17 }, sabado: { inicio: 8, fim: 13 }, domingo: false, limiteDia: 100 };
 const hora = (v: any, d: number) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= 0 && n <= 23 ? n : d; };
 export function mergePrefetchConfig(d: any): PrefetchConfig {
   const base = DEFAULT_PREFETCH_CONFIG;
@@ -27,7 +28,8 @@ export function mergePrefetchConfig(d: any): PrefetchConfig {
     if (fim <= inicio) fim = Math.min(23, inicio + 1);
     return { inicio, fim };
   };
-  return { semana: win(d?.semana, base.semana), sabado: win(d?.sabado, base.sabado), domingo: d?.domingo === true };
+  const lim = Math.round(Number(d?.limiteDia));
+  return { semana: win(d?.semana, base.semana), sabado: win(d?.sabado, base.sabado), domingo: d?.domingo === true, limiteDia: Number.isFinite(lim) && lim >= 0 && lim <= 2000 ? lim : base.limiteDia };
 }
 /** A pré-leitura pode rodar agora? (hora e dia da semana no fuso de São Paulo) */
 export function dentroDaJanela(cfg: PrefetchConfig, now = new Date()): boolean {
@@ -49,6 +51,8 @@ export class State {
   backups = new Map<string, any>();
   /** Horários da pré-leitura automática (horas inteiras, fuso de São Paulo). */
   prefetchConfig: PrefetchConfig = { ...DEFAULT_PREFETCH_CONFIG };
+  /** Quantas leituras a pré-leitura já fez hoje (dia de São Paulo) e se o Gemini já avisou que o limite acabou. */
+  prefetchUso: { dia: string; usados: number; esgotado: boolean } = { dia: '', usados: 0, esgotado: false };
   brandMap: Record<string, string> = {};
   /** Marcas escolhidas para o relatório do envio diário (valem para todos os usuários). */
   reportBrands: { brands: string[]; updatedAt?: string; updatedBy?: string } = { brands: [] };
@@ -70,6 +74,7 @@ export class State {
       s.watch('backups', (t, id, d) => { t === 'remove' ? this.backups.delete(id) : this.backups.set(id, d); }),
       s.watch('settings', (t, id, d) => {
         if (id === 'brandSellers') { this.brandMap = t === 'remove' ? {} : { ...(d?.map || {}) }; this.touch(); }
+        if (id === 'prefetchUso') { this.prefetchUso = t === 'remove' ? { dia: '', usados: 0, esgotado: false } : { dia: String(d?.dia || ''), usados: Number(d?.usados) || 0, esgotado: d?.esgotado === true }; }
         if (id === 'prefetchConfig') { this.prefetchConfig = t === 'remove' ? { ...DEFAULT_PREFETCH_CONFIG } : mergePrefetchConfig(d); }
         if (id === 'reportBrands') { this.reportBrands = t === 'remove' ? { brands: [] } : { brands: Array.isArray(d?.brands) ? d.brands : [], updatedAt: d?.updatedAt, updatedBy: d?.updatedBy }; }
       }),

@@ -19,7 +19,6 @@ import { BackupModal } from './components/BackupModal';
 import { NotificationsModal } from './components/NotificationsModal';
 import { BoletosView } from './components/BoletosView';
 import { OpenOrdersReportModal } from './components/OpenOrdersReportModal';
-import { DailyBackupReminderModal } from './components/DailyBackupReminderModal';
 import { PWAInstallModal } from './components/PWAInstallModal';
 import { RefreshReminder } from './components/RefreshReminder';
 import { usePWAInstall } from './hooks/usePWAInstall';
@@ -79,7 +78,6 @@ export default function App() {
 
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
-  const [isDailyBackupReminderOpen, setIsDailyBackupReminderOpen] = useState(false);
   const [isOpenOrdersReportModalOpen, setIsOpenOrdersReportModalOpen] = useState(false);
   const [selectedImageOrder, setSelectedImageOrder] = useState<Order | null>(null);
   const [selectedSettlementOrder, setSelectedSettlementOrder] = useState<Order | null>(null);
@@ -147,6 +145,34 @@ export default function App() {
   }, [currentUser?.name]);
 
   useEffect(() => { setSavedBrandsForReports(savedBrands); }, [savedBrands]);
+
+  // Aviso no 1º acesso do dia (Gestão): o backup é feito sozinho pelo servidor; aqui só se avisa que foi guardado.
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== 'admin') return;
+    const hoje = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    try { if (localStorage.getItem('vv_backup_aviso') === hoje) return; } catch { /* sem storage: avisa mesmo assim */ }
+    let cancelado = false;
+    (async () => {
+      for (let i = 0; i < 4 && !cancelado; i++) {
+        try {
+          const r = await fetch('/api/backups', { cache: 'no-store' });
+          if (r.ok) {
+            const lista: any[] = await r.json();
+            const m = lista.find((x) => x.auto && x.dia === hoje);
+            if (m) {
+              const hora = new Date(m.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+              setToastMessage({ message: `Backup de hoje guardado automaticamente às ${hora} (${m.orders} pedidos, ${m.boletos} boletos).`, type: 'success' });
+              try { localStorage.setItem('vv_backup_aviso', hoje); } catch { /* ignore */ }
+              return;
+            }
+          }
+        } catch { /* tenta de novo */ }
+        await new Promise((res) => setTimeout(res, 2500));
+      }
+      if (!cancelado) setToastMessage({ message: 'Não foi possível confirmar o backup de hoje. Abra Backup e use "Guardar um backup agora".', type: 'error' });
+    })();
+    return () => { cancelado = true; };
+  }, [currentUser?.name, currentUser?.role]);
 
   // Painel da pré-leitura: recurso em teste, só para estes usuários (para liberar, é só acrescentar os nomes). A pré-visualização vale para todos.
   const isBeta = ['Pedro'].includes(cu.name);
@@ -1237,12 +1263,6 @@ export default function App() {
             message: `Conectado como ${usr.name} (${usr.role === 'admin' ? 'Gestão Total' : 'Vendedor'})`,
             type: 'success',
           });
-          if (usr.role === 'admin') {
-            try {
-              const todayStr = new Date().toISOString().split('T')[0];
-              if (localStorage.getItem('vv_last_backup_reminder_date') !== todayStr) setIsDailyBackupReminderOpen(true);
-            } catch {}
-          }
         }}
       />
 
@@ -1317,19 +1337,6 @@ export default function App() {
         orders={userVisibleOrders}
       />
 
-      <DailyBackupReminderModal
-        isOpen={isDailyBackupReminderOpen}
-        onClose={() => setIsDailyBackupReminderOpen(false)}
-        currentUser={currentUser}
-        orders={safeOrdersList}
-        boletos={boletos}
-        onDownloadSuccess={() => {
-          setToastMessage({
-            message: '✅ Cópia de segurança diária baixada com sucesso!',
-            type: 'success',
-          });
-        }}
-      />
 
       {/* PWA Mobile Installation Modal (Android & iOS) */}
       <PWAInstallModal
