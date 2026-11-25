@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
 import { createApp } from '../server/app';
 import { MemoryStore } from '../server/store';
+import { ExtractError } from '../server/extract';
 
 let server: Server;
 let base = '';
@@ -442,4 +443,112 @@ test('lista de marcas do relatório: todos leem, só a gestão salva, valores s�
   assert.equal((await ric.put('/api/report-brands', { brands: ['Z'] })).status, 403);
   assert.deepEqual((await ric.get('/api/report-brands')).data.brands, put.data.brands);
   assert.equal((await pedro.put('/api/report-brands', { brands: 'x' })).status, 400);
+});
+
+test('backup automático: gera, lista, baixa íntegro e só a gestão acessa', async () => {
+  const pedro = await as('Pedro', '3220');
+  const ric = await as('Ricardo', '1234');
+  const o: any = (await pedro.post('/api/orders', { marca: 'BKP MARCA', data: '2026-11-10', valor: 321, vendedor: 'Ricardo', imageUrl: PNG })).data;
+  assert.ok(o.id);
+  assert.equal((await ric.get('/api/backups')).status, 403);
+  assert.equal((await ric.post('/api/backups')).status, 403);
+  const meta = (await pedro.post('/api/backups')).data;
+  assert.ok(meta.id && meta.chunks >= 1 && meta.orders >= 1);
+  const lista = (await pedro.get('/api/backups')).data;
+  assert.ok(lista.some((m: any) => m.id === meta.id));
+  const dl = await pedro.get(`/api/backups/${meta.id}/download`);
+  assert.equal(dl.status, 200);
+  const json = JSON.parse(Buffer.isBuffer(dl.data) ? dl.data.toString('utf8') : JSON.stringify(dl.data));
+  assert.ok(json.orders.some((x: any) => x.id === o.id && x.marca === 'BKP MARCA'));
+  assert.ok(!json.orders.some((x: any) => x.imageUrl)); // sem fotos
+  assert.equal((await pedro.get('/api/backups/nao-existe/download')).status, 404);
+});
+
+test('backup diário automático: o 1º acesso da gestão no dia cria um, e não cria outro no mesmo dia', async () => {
+  const pedro = await as('Pedro', '3220');
+  for (const k of [...stateRef.backups.keys()]) { await store.deleteWhere('backupChunks', 'backupId', k); await store.delete('backups', k); stateRef.backups.delete(k); }
+  await pedro.get('/api/orders');
+  await new Promise((r) => setTimeout(r, 300));
+  const auto1 = [...stateRef.backups.values()].filter((m: any) => m.auto);
+  assert.equal(auto1.length, 1);
+  await pedro.get('/api/orders');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal([...stateRef.backups.values()].filter((m: any) => m.auto).length, 1);
+});
+
+test('boletos duplicados: lista os grupos, mantém o mais antigo e nunca apaga o único', async () => {
+  const pedro = await as('Pedro', '3220');
+  const ric = await as('Ricardo', '1234');
+  const base = { marca: 'DUP MARCA', valor: 700, data: '2026-10-05', vendedor: 'Ricardo', numeroNF: '555' };
+  const a: any = (await pedro.post('/api/boletos', { ...base, pdfNFUrl: PDF })).data;
+  const b: any = (await pedro.post('/api/boletos', { ...base, pdfNFUrl: PDF })).data;
+  const c: any = (await pedro.post('/api/boletos', { ...base })).data;
+  const unico: any = (await pedro.post('/api/boletos', { marca: 'DUP MARCA', valor: 701, data: '2026-10-05', vendedor: 'Ricardo' })).data;
+  assert.equal((await ric.get('/api/boletos/duplicados')).status, 403);
+  const g = (await pedro.get('/api/boletos/duplicados')).data.grupos.find((x: any) => x.marca === 'DUP MARCA');
+  assert.equal(g.copias.length, 3);
+  assert.equal(g.manter, a.id);
+  assert.equal(g.confianca, 'alta');
+  assert.ok(!g.copias.some((x: any) => x.id === unico.id));
+  // tentar apagar a cópia que fica e o boleto único: ignorados
+  const r1 = (await pedro.post('/api/boletos/duplicados/remover', { ids: [a.id, unico.id] })).data;
+  assert.equal(r1.removidos, 0);
+  assert.equal((await ric.post('/api/boletos/duplicados/remover', { ids: [b.id] })).status, 403);
+  const r2 = (await pedro.post('/api/boletos/duplicados/remover', { ids: [b.id, c.id] })).data;
+  assert.equal(r2.removidos, 2);
+  const left = (await pedro.get('/api/boletos')).data.filter((x: any) => x.marca === 'DUP MARCA');
+  assert.deepEqual(left.map((x: any) => x.id).sort(), [a.id, unico.id].sort());
+  assert.equal((await pedro.get('/api/boletos/duplicados')).data.grupos.some((x: any) => x.marca === 'DUP MARCA'), false);
+});
+
+test('conferência dos itens: só a gestão salva, valida números e marca como conferido', async () => {
+  const pedro = await as('Pedro', '3220');
+  const ric = await as('Ricardo', '1234');
+  const o: any = (await pedro.post('/api/orders', { marca: 'CONF MARCA', data: '2026-11-11', valor: 100, vendedor: 'Ricardo', imageUrl: PNG })).data;
+  const itens = [{ mercadoria: ' laranja ', un: 'CX', quantidade: 2, preco: 30 }, { mercadoria: '', quantidade: 1, preco: 1 }, { mercadoria: 'LIMAO', quantidade: 1, preco: 40, total: 40 }];
+  assert.equal((await ric.put(`/api/orders/${o.id}/itens`, { itens })).status, 403);
+  assert.equal((await pedro.put(`/api/orders/${o.id}/itens`, { itens: 'x' })).status, 400);
+  assert.equal((await pedro.put(`/api/orders/${o.id}/itens`, { itens: [{ mercadoria: 'A', quantidade: -1, preco: 1 }] })).status, 400);
+  const ok = await pedro.put(`/api/orders/${o.id}/itens`, { itens, bilhete: '123A' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.itens.length, 2);
+  assert.equal(ok.data.itens[0].total, 60); // total calculado
+  const saved = stateRef.orders.get(o.id);
+  assert.equal(saved.itensConferidosPor, 'Pedro');
+  assert.equal(saved.bilhete, '123A');
+  assert.equal((await pedro.put('/api/orders/nao-existe/itens', { itens })).status, 404);
+});
+
+test('pré-leitura: lê só marcas da lista salva ou com 3+ pedidos, uma vez, e para ao bater no limite', async () => {
+  let chamadas = 0, falhaLimite = false;
+  const mock = async () => { chamadas++; if (falhaLimite) throw new ExtractError('limite', 429); return { bilhete: 'B1', itens: [{ mercadoria: 'LARANJA', un: 'CX', quantidade: 1, preco: 10, total: 10 }] }; };
+  const a = createApp(new MemoryStore(), { sessionSecret: 'x', extractor: null, itemsExtractor: mock, prefetchGapMs: 0 });
+  await a.state.load();
+  const srv = await new Promise<any>((r) => { const s = a.app.listen(0, () => r(s)); });
+  const b = `http://127.0.0.1:${srv.address().port}`;
+  const l = await fetch(b + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Pedro', password: '3220' }) });
+  const pc = (l.headers.get('set-cookie') || '').split(';')[0];
+  const call = (m: string, path: string, body?: any) => fetch(b + path, { method: m, headers: { cookie: pc, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const mk = async (marca: string) => (await (await call('POST', '/api/orders', { marca, data: '2026-11-07', valor: 100, vendedor: 'Ricardo', imageUrl: PNG })).json());
+  for (let i = 0; i < 3; i++) await mk('TRES');       // 3 pedidos: entra
+  await mk('SALVA');                                    // 1 pedido, mas na lista salva: entra
+  await mk('SOLTA');                                    // 1 pedido, fora da lista: não entra
+  await call('PUT', '/api/report-brands', { brands: ['SALVA'] });
+  assert.equal((await (await call('GET', '/api/prefetch/status')).json() as any).pendentes, 4);
+  await a.runPrefetch();
+  assert.equal(chamadas, 4);
+  const lista: any[] = await (await call('GET', '/api/orders')).json();
+  assert.equal(lista.filter((o) => o.itens?.length).length, 4);
+  assert.ok(!lista.find((o) => o.marca === 'SOLTA').itens);
+  await a.runPrefetch();
+  assert.equal(chamadas, 4); // não lê de novo
+  // limite da IA: para na primeira falha e não insiste
+  falhaLimite = true; chamadas = 0;
+  for (let i = 0; i < 3; i++) await mk('OUTRA');
+  const info = await a.runPrefetch();
+  assert.equal(chamadas, 1);
+  assert.match(info.motivo, /limite/);
+  const pre = await call('POST', '/api/prefetch/run');
+  assert.equal(pre.status, 200);
+  (srv as any).closeAllConnections?.(); srv.close();
 });

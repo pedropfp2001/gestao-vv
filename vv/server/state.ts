@@ -19,6 +19,8 @@ export class State {
   notifications = new Map<string, AppNotification>();
   users = new Map<string, UserDoc>();
   ledger = new Map<string, any>();
+  /** Só os metadados dos backups automáticos (o conteúdo fica em 'backupChunks'). */
+  backups = new Map<string, any>();
   brandMap: Record<string, string> = {};
   /** Marcas escolhidas para o relatório do envio diário (valem para todos os usuários). */
   reportBrands: { brands: string[]; updatedAt?: string; updatedBy?: string } = { brands: [] };
@@ -37,6 +39,7 @@ export class State {
       s.watch('notifications', (t, id, d) => { t === 'remove' ? this.notifications.delete(id) : this.notifications.set(id, d); }),
       s.watch('users', (t, id, d) => { t === 'remove' ? this.users.delete(id) : this.users.set(id, d); }),
       s.watch('ledger', (t, id, d) => { t === 'remove' ? this.ledger.delete(id) : this.ledger.set(id, d); }),
+      s.watch('backups', (t, id, d) => { t === 'remove' ? this.backups.delete(id) : this.backups.set(id, d); }),
       s.watch('settings', (t, id, d) => {
         if (id === 'brandSellers') { this.brandMap = t === 'remove' ? {} : { ...(d?.map || {}) }; this.touch(); }
         if (id === 'reportBrands') { this.reportBrands = t === 'remove' ? { brands: [] } : { brands: Array.isArray(d?.brands) ? d.brands : [], updatedAt: d?.updatedAt, updatedBy: d?.updatedBy }; }

@@ -24,7 +24,7 @@ async function main() {
   } else {
     store = await FirestoreStore.create();
   }
-  const { app, state } = createApp(store, {
+  const { app, state, ensureDailyBackup, runPrefetch } = createApp(store, {
     sessionSecret: secret,
     secureCookies: isProd,
     staticDir: path.join(process.cwd(), 'dist'),
@@ -41,7 +41,16 @@ async function main() {
       setTimeout(() => boot(attempt + 1), Math.min(60000, 5000 * attempt));
     }
   };
-  void boot();
+  void boot().then(() => {
+    // backup diário: confere ao iniciar e a cada 30 minutos (o 1º acesso do dia da gestão também dispara)
+    void ensureDailyBackup();
+    setInterval(() => void ensureDailyBackup(), 30 * 60 * 1000);
+    // pré-leitura das fotos das marcas da lista salva e das com 3+ pedidos (desliga com PREFETCH_ITEMS=off)
+    if (process.env.PREFETCH_ITEMS !== 'off') {
+      setTimeout(() => void runPrefetch(), 60 * 1000);
+      setInterval(() => void runPrefetch(), 30 * 60 * 1000);
+    }
+  });
 }
 
 main().catch((e) => {

@@ -1198,7 +1198,7 @@ export default function App() {
       </footer>
 
       {/* Modals */}
-      {showExtratoPicker && <SelectBrandsReportModal mode="extrato" orders={userVisibleOrders} onClose={() => setShowExtratoPicker(false)} onBeforeGenerate={() => setReportUser(cu.name)} />}
+      {showExtratoPicker && <SelectBrandsReportModal mode="extrato" canEditItens={cu.role === 'admin'} orders={userVisibleOrders} onClose={() => setShowExtratoPicker(false)} onBeforeGenerate={() => setReportUser(cu.name)} />}
       {showBrandPicker && (
         <SelectBrandsReportModal orders={userVisibleOrders} onClose={() => setShowBrandPicker(false)} onBeforeGenerate={() => setReportUser(cu.name)} savedBrands={savedBrands} canSave={cu.role === 'admin'} onSaved={setSavedBrands} />
       )}

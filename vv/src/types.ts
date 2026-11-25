@@ -57,6 +57,8 @@ export interface Order {
   bilhete?: string;
   vencimento?: string; // YYYY-MM-DD, só se estiver impresso no papel
   itensLidosEm?: string;
+  itensConferidosEm?: string; // quando a gestão conferiu/corrigiu os itens lidos
+  itensConferidosPor?: string;
 }
 
 export interface CustomerSummary {

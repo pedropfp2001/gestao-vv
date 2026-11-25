@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { X, Search, Download, Share2, CheckSquare, Square, Save } from 'lucide-react';
 import { Order } from '../types';
-import { formatCurrency, generateSelectedBrandsPDF, generateExtratoClientesPDF } from '../utils/pdfGenerator';
+import { formatCurrency, generateSelectedBrandsPDF, generateExtratoClientesPDF, carregarItens } from '../utils/pdfGenerator';
+import { ConferenciaItensModal, ItensMap } from './ConferenciaItensModal';
 
 interface Props {
   orders: Order[];
@@ -15,17 +16,20 @@ interface Props {
   onSaved?: (brands: string[]) => void;
   /** 'extrato' = um PDF por marca, com as mercadorias lidas das fotos pela IA */
   mode?: 'resumo' | 'extrato';
+  /** só a Gestão corrige os itens na conferência */
+  canEditItens?: boolean;
 }
 
 const saldo = (o: Order) => Math.max(0, (o.valor || 0) - (o.valorPago || 0));
 const brandOf = (o: Order) => (o.marca || 'SEM MARCA').trim() || 'SEM MARCA';
 const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
-export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBeforeGenerate, savedBrands: savedProp = [], canSave: canSaveProp = false, onSaved, mode = 'resumo' }) => {
+export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBeforeGenerate, savedBrands: savedProp = [], canSave: canSaveProp = false, onSaved, mode = 'resumo', canEditItens = false }) => {
   const extrato = mode === 'extrato';
   const savedBrands = extrato ? [] : savedProp;
   const canSave = extrato ? false : canSaveProp;
   const [progress, setProgress] = useState<string | null>(null);
+  const [revisao, setRevisao] = useState<{ grupos: { marca: string; orders: Order[] }[]; itens: ItensMap; aviso?: string } | null>(null);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Set<string>>(() => new Set(savedBrands.map((b) => b.trim().toUpperCase())));
   const [saving, setSaving] = useState(false);
@@ -54,6 +58,10 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
   const visible = brands.filter((b) => !query.trim() || norm(b.marca).includes(norm(query)));
   const chosen = brands.filter((b) => selected.has(b.key));
   const totalPedidos = chosen.reduce((s, b) => s + b.pedidos, 0);
+  // quantos dos pedidos escolhidos já têm os itens lidos (saem na hora, sem chamar a IA)
+  const chosenKeys = new Set(chosen.map((b) => b.key));
+  const escolhidos = orders.filter((o) => o.status === 'em_aberto' && saldo(o) > 0 && chosenKeys.has(brandOf(o).toUpperCase()));
+  const jaLidos = escolhidos.filter((o) => Array.isArray(o.itens) && o.itens.length).length;
   const totalValor = chosen.reduce((s, b) => s + b.valor, 0);
 
   const toggle = (key: string) =>
@@ -84,9 +92,18 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
     try {
       onBeforeGenerate?.();
       if (extrato) {
+        // 1) lê os itens (só os que ainda não foram lidos) e 2) abre a conferência antes de gerar os PDFs
         setProgress('Preparando…');
-        const r = await generateExtratoClientesPDF(orders, 'download', chosen.map((b) => b.marca), (d, t) => setProgress(`Lendo itens ${d} de ${t}…`));
-        if (r.semItens > 0) alert(`${r.semItens} pedido(s) saíram só com o valor total porque os itens não puderam ser lidos.${r.motivo ? '\nMotivo: ' + r.motivo : ''}\nTente de novo mais tarde: os que já foram lidos ficam salvos e não são lidos outra vez.`);
+        const wanted = new Set(chosen.map((b) => b.key));
+        const abertos = orders.filter((o) => o.status === 'em_aberto' && saldo(o) > 0 && wanted.has(brandOf(o).toUpperCase()));
+        const grupos = chosen
+          .map((b) => ({ marca: b.marca, orders: abertos.filter((o) => brandOf(o).toUpperCase() === b.key).sort((x, y) => x.data.localeCompare(y.data) || x.id.localeCompare(y.id)) }))
+          .filter((g) => g.orders.length);
+        const r = await carregarItens(grupos.flatMap((g) => g.orders), (d, t) => setProgress(`Lendo itens ${d} de ${t}…`));
+        setRevisao({
+          grupos, itens: r.itens,
+          aviso: r.falhas > 0 ? `${r.falhas} pedido(s) não puderam ser lidos pela IA.${r.motivo ? ' Motivo: ' + r.motivo : ''} Eles saem só com o valor total, ou você pode digitar os itens (Gestão).` : undefined,
+        });
       } else {
         await generateSelectedBrandsPDF(orders, chosen.map((b) => b.marca), action);
       }
@@ -100,8 +117,21 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
 
   const select3 = () => setSelected(new Set(brands.filter((b) => b.pedidos >= 3).map((b) => b.key)));
 
+  const confirmarConferencia = async (itensFinal: ItensMap) => {
+    if (!revisao) return;
+    setBusy('download');
+    try {
+      setProgress('Gerando PDFs…');
+      await generateExtratoClientesPDF(orders, 'download', revisao.grupos.map((g) => g.marca), undefined, itensFinal);
+      setRevisao(null);
+    } finally { setBusy(null); setProgress(null); }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={onClose}>
+      {revisao && (
+        <ConferenciaItensModal grupos={revisao.grupos} itens={revisao.itens} canEdit={canEditItens} aviso={revisao.aviso} onCancel={() => setRevisao(null)} onConfirm={confirmarConferencia} />
+      )}
       <div className="bg-white w-full max-w-lg max-h-[90vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between p-5 border-b border-slate-100">
           <div>
@@ -160,6 +190,11 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
             <span>{chosen.length} {chosen.length === 1 ? 'marca' : 'marcas'} · {totalPedidos} {totalPedidos === 1 ? 'pedido' : 'pedidos'}</span>
             <span className="text-red-800 text-sm font-black">{formatCurrency(totalValor)}</span>
           </div>
+          {extrato && escolhidos.length > 0 && (
+            <p className="text-[11px] text-slate-500 px-1">
+              {jaLidos} de {escolhidos.length} pedidos já estão lidos (saem na hora){escolhidos.length - jaLidos > 0 ? `; ${escolhidos.length - jaLidos} ainda vão passar pela IA agora.` : '.'}
+            </p>
+          )}
           {canSave && (
             <div>
               <button
@@ -178,7 +213,7 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
               onClick={() => generate('download')}
               className="flex-1 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
             >
-              <Download className="w-4 h-4" /> {busy === 'download' ? (progress || 'Gerando…') : extrato ? `Baixar ${chosen.length || ''} extrato${chosen.length === 1 ? '' : 's'}` : 'Baixar PDF'}
+              <Download className="w-4 h-4" /> {busy === 'download' ? (progress || 'Gerando…') : extrato ? `Ler e conferir (${chosen.length})` : 'Baixar PDF'}
             </button>
             {!extrato && (            <button
                 disabled={!chosen.length || !!busy}

@@ -1,3 +1,4 @@
+import zlib from 'node:zlib';
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -23,6 +24,7 @@ export interface AppOptions {
   secureCookies?: boolean;
   staticDir?: string;
   extractor?: Extractor | null; // IA opcional (padrão: Gemini se GEMINI_API_KEY existir)
+  prefetchGapMs?: number; // pausa entre leituras da pré-leitura (testes usam 0)
   itemsExtractor?: ItemsExtractor | null; // leitura dos itens (mercadorias) para o extrato
 }
 
@@ -217,6 +219,7 @@ export function createApp(store: Store, opts: AppOptions) {
     res.setHeader('X-Dataset-Timestamp', state.version);
     res.setHeader('X-Store-Status', store.status().quotaExhausted ? 'quota' : 'ok');
     res.setHeader('Cache-Control', 'private, no-cache');
+    if (isGestao(req.user!)) void ensureDailyBackup(); // 1º acesso da gestão no dia dispara o backup (o site pode estar dormindo)
     res.json(state.ordersList().filter((o) => canSeeOrder(req.user!, o)).map(orderView));
   });
   app.get('/api/dataset/info', (req, res) => {
@@ -240,19 +243,93 @@ export function createApp(store: Store, opts: AppOptions) {
     if (Array.isArray(cur.itens) && cur.itens.length && !req.body?.force) return res.json({ itens: cur.itens, bilhete: cur.bilhete, vencimento: cur.vencimento, cached: true });
     if (cur.status === 'baixado') return res.status(409).json({ error: 'Pedido já baixado.' });
     if (!itemsExtractor) return res.status(503).json({ error: 'Leitura por IA não está ativada (falta GEMINI_API_KEY).' });
-    const doc = await store.get('orderImages', cur.id);
-    if (!doc?.data || !isDataImage(doc.data)) return res.status(422).json({ error: 'Pedido sem foto.' });
     try {
-      const out = await once(`itens-${cur.id}`, () => itemsExtractor(doc.data));
-      const fresh: any = state.orders.get(cur.id) || cur;
-      const now = new Date().toISOString();
-      const upd = cleanUndefined({ ...fresh, itens: out.itens, bilhete: out.bilhete, vencimento: out.vencimento, itensLidosEm: now, updatedAt: now });
-      await commit([{ type: 'set', col: 'orders', id: cur.id, data: upd }]);
+      const out = await lerItens(cur);
+      if (!out) return res.status(422).json({ error: 'Pedido sem foto.' });
       res.json({ itens: out.itens, bilhete: out.bilhete, vencimento: out.vencimento });
     } catch (e: any) {
       if (e instanceof ExtractError) return res.status(e.status).json({ error: e.message });
       throw e;
     }
+  }));
+
+  /** Lê a foto de um pedido e guarda os itens nele (usado pelo botão do extrato e pela pré-leitura). null = sem foto. */
+  async function lerItens(cur: any) {
+    const doc = await store.get('orderImages', cur.id);
+    if (!doc?.data || !isDataImage(doc.data)) return null;
+    const out = await once(`itens-${cur.id}`, () => itemsExtractor!(doc.data));
+    const fresh: any = state.orders.get(cur.id) || cur;
+    const now = new Date().toISOString();
+    const upd = cleanUndefined({ ...fresh, itens: out.itens, bilhete: out.bilhete, vencimento: out.vencimento, itensLidosEm: now, updatedAt: now });
+    await commit([{ type: 'set', col: 'orders', id: cur.id, data: upd }]);
+    return out;
+  }
+
+  /* ---------- pré-leitura: deixa os itens prontos antes de você pedir o relatório ---------- */
+  const PREFETCH_PER_RUN = Number(process.env.PREFETCH_PER_RUN || 25);
+  const PREFETCH_GAP_MS = opts.prefetchGapMs ?? 4000; // pausa entre leituras: respeita o limite por minuto do Gemini
+  const prefetchFail = new Map<string, number>();    // pedido -> quando falhou (não insiste por 6h)
+  const prefetchInfo: any = { rodando: false, ultimaExecucao: null as string | null, lidosNaUltima: 0, motivo: '' };
+  const prefetchAlvo = () => {
+    const abertos = state.ordersList().filter((o: any) => o.status === 'em_aberto' && !(o.valorPago && o.valorPago >= o.valor));
+    const porMarca = new Map<string, number>();
+    abertos.forEach((o: any) => { const k = normalizeBrandName(o.marca || '').toUpperCase(); porMarca.set(k, (porMarca.get(k) || 0) + 1); });
+    const lista = new Set((state.reportBrands?.brands || []).map((b: string) => normalizeBrandName(b).toUpperCase()));
+    return abertos.filter((o: any) => {
+      const k = normalizeBrandName(o.marca || '').toUpperCase();
+      return (lista.has(k) || (porMarca.get(k) || 0) >= 3) && !(Array.isArray(o.itens) && o.itens.length);
+    });
+  };
+  async function runPrefetch(): Promise<typeof prefetchInfo> {
+    if (!itemsExtractor || !state.ready || prefetchInfo.rodando) return prefetchInfo;
+    prefetchInfo.rodando = true; prefetchInfo.lidosNaUltima = 0; prefetchInfo.motivo = '';
+    try {
+      const agora = Date.now();
+      const fila = prefetchAlvo().filter((o: any) => agora - (prefetchFail.get(o.id) || 0) > 6 * 3600 * 1000).slice(0, PREFETCH_PER_RUN);
+      for (const o of fila) {
+        try {
+          const r = await lerItens(o);
+          if (r) prefetchInfo.lidosNaUltima++; else prefetchFail.set(o.id, Date.now()); // sem foto
+        } catch (e: any) {
+          prefetchFail.set(o.id, Date.now());
+          if (e instanceof ExtractError && (e.status === 429 || e.status === 403 || e.status === 400)) { prefetchInfo.motivo = e.message; break; } // limite/chave: para e tenta mais tarde
+        }
+        if (PREFETCH_GAP_MS) await new Promise((r) => setTimeout(r, PREFETCH_GAP_MS));
+      }
+    } finally { prefetchInfo.rodando = false; prefetchInfo.ultimaExecucao = new Date().toISOString(); }
+    return prefetchInfo;
+  }
+  app.get('/api/prefetch/status', requireGestao, (_req, res) => res.json({ ativo: !!itemsExtractor, pendentes: itemsExtractor ? prefetchAlvo().length : 0, ...prefetchInfo }));
+  app.post('/api/prefetch/run', requireGestao, wrap(async (_req, res) => {
+    if (!itemsExtractor) return res.status(503).json({ error: 'Leitura por IA não está ativada (falta GEMINI_API_KEY).' });
+    void runPrefetch(); // roda em segundo plano
+    res.json({ iniciado: true, pendentes: prefetchAlvo().length });
+  }));
+  /** Conferência: a gestão corrige os itens lidos pela IA e o sistema guarda a versão conferida. */
+  app.put('/api/orders/:id/itens', requireGestao, wrap(async (req, res) => {
+    const cur: any = state.orders.get(req.params.id);
+    if (!cur) return res.status(404).json({ error: 'Pedido não encontrado.' });
+    if (cur.status === 'baixado') return res.status(409).json({ error: 'Pedido já baixado.' });
+    const raw = req.body?.itens;
+    if (!Array.isArray(raw) || raw.length > 200) return res.status(400).json({ error: 'Lista de itens inválida.' });
+    const num = (v: any) => { const n = Number(v); return Number.isFinite(n) ? Math.round(n * 1000) / 1000 : NaN; };
+    const itens: any[] = [];
+    for (const r of raw) {
+      const mercadoria = String(r?.mercadoria ?? '').trim().slice(0, 120);
+      if (!mercadoria) continue;
+      const quantidade = num(r?.quantidade), preco = num(r?.preco);
+      let total = num(r?.total);
+      if (Number.isNaN(quantidade) || Number.isNaN(preco) || quantidade < 0 || preco < 0) return res.status(400).json({ error: `Quantidade ou preço inválido em "${mercadoria}".` });
+      if (Number.isNaN(total)) total = Math.round(quantidade * preco * 100) / 100;
+      itens.push(cleanUndefined({ codigo: r?.codigo ? String(r.codigo).slice(0, 30) : undefined, mercadoria, un: r?.un ? String(r.un).slice(0, 8) : undefined, quantidade, preco, total }));
+    }
+    const now = new Date().toISOString();
+    const upd = cleanUndefined({
+      ...cur, itens, bilhete: req.body?.bilhete ? String(req.body.bilhete).slice(0, 30) : cur.bilhete,
+      itensLidosEm: cur.itensLidosEm || now, itensConferidosEm: now, itensConferidosPor: String(req.user), updatedAt: now,
+    });
+    await commit([{ type: 'set', col: 'orders', id: cur.id, data: upd }]);
+    res.json({ itens, bilhete: upd.bilhete, conferido: true });
   }));
   app.post('/api/extract-order', requireGestao, wrap(async (req, res) => {
     if (!extractor) return res.status(503).json({ error: 'Leitura por IA não está ativada (falta GEMINI_API_KEY). Preencha manualmente.' });
@@ -691,6 +768,37 @@ export function createApp(store: Store, opts: AppOptions) {
     res.json(boletoView(upd));
   }));
 
+  /** Boletos repetidos (mesma marca, valor, data, NF, nº do boleto, vendedor e situação). Fica o mais antigo. */
+  const dupKey = (b: any) => [normalizeBrandName(b.marca || '').toUpperCase(), (Number(b.valor) || 0).toFixed(2), b.data, b.numeroNF || '', b.numeroBoleto || '', b.vendedor, b.situacao].join('|');
+  const dupGroups = () => {
+    const g = new Map<string, any[]>();
+    for (const b of state.boletosList()) g.set(dupKey(b), [...(g.get(dupKey(b)) || []), b]);
+    return [...g.values()].filter((l) => l.length > 1).map((l) => {
+      const list = [...l].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)) || (a.indexNum || 0) - (b.indexNum || 0));
+      const first = new Date(list[0].createdAt).getTime() || 0;
+      const temNumero = !!(list[0].numeroNF || list[0].numeroBoleto);
+      return {
+        marca: list[0].marca, valor: list[0].valor, data: list[0].data, situacao: list[0].situacao, vendedor: list[0].vendedor,
+        numeroNF: list[0].numeroNF || '', numeroBoleto: list[0].numeroBoleto || '',
+        // cópias lançadas em sequência (ou com o mesmo nº de NF/boleto) quase certamente são repetidas por erro
+        confianca: temNumero || list.slice(1).every((x) => (new Date(x.createdAt).getTime() || 0) - first < 6 * 3600 * 1000) ? 'alta' : 'baixa',
+        manter: list[0].id,
+        copias: list.map((x, i) => ({ id: x.id, indexNum: x.indexNum, createdAt: x.createdAt, cadastradoPor: x.cadastradoPor || '', manter: i === 0 })),
+      };
+    }).sort((a, b) => String(a.marca).localeCompare(String(b.marca), 'pt-BR'));
+  };
+  app.get('/api/boletos/duplicados', requireGestao, (_req, res) => res.json({ grupos: dupGroups() }));
+  app.post('/api/boletos/duplicados/remover', requireGestao, wrap(async (req, res) => {
+    const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
+    if (!ids.length) return res.status(400).json({ error: 'Nenhum boleto escolhido.' });
+    const valid = new Set<string>();
+    for (const g of dupGroups()) g.copias.forEach((c) => { if (!c.manter) valid.add(c.id); });
+    const alvo = [...new Set(ids)].filter((id) => valid.has(id)); // nunca apaga a cópia que fica, nem boleto sem repetição
+    const ops: WriteOp[] = [];
+    for (const id of alvo) { ops.push(...(await pdfDeleteOps(id)), { type: 'delete', col: 'boletos', id }); }
+    if (ops.length) await commit(ops);
+    res.json({ removidos: alvo.length, ignorados: ids.length - alvo.length });
+  }));
   app.delete('/api/boletos/:id', requireGestao, wrap(async (req, res) => {
     const cur = state.boletos.get(req.params.id);
     if (!cur) return res.status(404).json({ error: 'Boleto não encontrado.' });
@@ -723,22 +831,87 @@ export function createApp(store: Store, opts: AppOptions) {
     delete c.pdfNFUrl; delete c.pdfBoletoUrl; delete c.pdfNFName; delete c.pdfBoletoName; delete c.diasEmAtraso;
     return c;
   };
-  app.get('/api/backup/export', requireGestao, (req, res) => {
-    const tipo = req.query.tipo === 'abertos' ? 'abertos' : 'completo';
+  const buildBackupPayload = (tipo: 'abertos' | 'completo', by: string) => {
     const allO = state.ordersList(), allB = state.boletosList();
     const orders = (tipo === 'abertos' ? allO.filter((o) => o.status === 'em_aberto') : allO).map(stripOrder);
     const boletos = (tipo === 'abertos' ? allB.filter((b) => b.situacao === 'EM ABERTO') : allB).map(stripBoleto);
-    const today = new Date().toISOString().split('T')[0];
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', `attachment; filename=Backup_${tipo === 'abertos' ? 'Em_Aberto' : 'Completo'}_VV_${today}.json`);
-    res.json({
-      app: 'Gestao VV', version: '2.0', tipo, exportedAt: new Date().toISOString(), exportedBy: req.user,
+    return {
+      app: 'Gestao VV', version: '2.0', tipo, exportedAt: new Date().toISOString(), exportedBy: by,
       totalOrders: allO.length, openOrders: allO.filter((o) => o.status === 'em_aberto').length,
       settledOrders: allO.filter((o) => o.status === 'baixado').length,
       totalBoletos: allB.length, openBoletos: allB.filter((b) => b.situacao === 'EM ABERTO').length,
       orders, boletos, brandSellerMap: state.brandMap,
-    });
+    };
+  };
+  app.get('/api/backup/export', requireGestao, (req, res) => {
+    const tipo = req.query.tipo === 'abertos' ? 'abertos' : 'completo';
+    const today = new Date().toISOString().split('T')[0];
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=Backup_${tipo === 'abertos' ? 'Em_Aberto' : 'Completo'}_VV_${today}.json`);
+    res.json(buildBackupPayload(tipo, req.user!));
   });
+
+  /* ---------- backup automático (1 por dia, guardado no próprio Firestore) ---------- */
+  const BACKUP_KEEP = 20;
+  const BACKUP_CHUNK = 700_000; // caracteres base64 por documento (limite do Firestore: 1 MB)
+  const spNow = () => {
+    const d = new Date();
+    const dia = d.toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    const hora = d.toLocaleTimeString('sv-SE', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
+    return { dia, hora };
+  };
+  let backupRunning: Promise<any> | null = null;
+  async function runBackup(by: string, auto: boolean) {
+    if (backupRunning) return backupRunning;
+    backupRunning = (async () => {
+      const payload = buildBackupPayload('completo', by);
+      const gz = zlib.gzipSync(Buffer.from(JSON.stringify(payload), 'utf8')).toString('base64');
+      const { dia, hora } = spNow();
+      let id = `${dia}_${hora}`;
+      for (let n = 2; state.backups.has(id); n++) id = `${dia}_${hora}-${n}`;
+      const chunks: string[] = [];
+      for (let i = 0; i < gz.length; i += BACKUP_CHUNK) chunks.push(gz.slice(i, i + BACKUP_CHUNK));
+      if (!chunks.length) chunks.push('');
+      const meta = { id, dia, auto, createdAt: new Date().toISOString(), createdBy: by, orders: payload.totalOrders, boletos: payload.totalBoletos, bytes: gz.length, chunks: chunks.length };
+      const ops: WriteOp[] = chunks.map((data, i) => ({ type: 'set', col: 'backupChunks', id: `${id}__${i}`, data: { backupId: id, i, data } }));
+      await store.batch(ops);
+      await store.set('backups', id, meta);
+      state.backups.set(id, meta);
+      // guarda só os mais recentes
+      const old = [...state.backups.values()].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(BACKUP_KEEP);
+      for (const m of old) {
+        try { await store.deleteWhere('backupChunks', 'backupId', m.id); await store.delete('backups', m.id); state.backups.delete(m.id); } catch { /* tenta na próxima */ }
+      }
+      return meta;
+    })().finally(() => { backupRunning = null; });
+    return backupRunning;
+  }
+  /** Faz o backup do dia se ainda não existir um automático de hoje. */
+  async function ensureDailyBackup() {
+    if (!state.ready) return null;
+    const { dia } = spNow();
+    if ([...state.backups.values()].some((m) => m.auto && m.dia === dia)) return null;
+    try { return await runBackup('Automático', true); }
+    catch (e: any) { console.error('[BACKUP] Falha no backup diário:', e?.message || e); return null; }
+  }
+  app.get('/api/backups', requireGestao, (_req, res) => {
+    void ensureDailyBackup();
+    res.json([...state.backups.values()].sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))));
+  });
+  app.post('/api/backups', requireGestao, wrap(async (req, res) => {
+    const meta = await runBackup(String(req.user), false);
+    res.json(meta);
+  }));
+  app.get('/api/backups/:id/download', requireGestao, wrap(async (req, res) => {
+    const meta = state.backups.get(req.params.id);
+    if (!meta) return res.status(404).json({ error: 'Backup não encontrado.' });
+    const parts = (await store.queryWhere('backupChunks', 'backupId', meta.id)).sort((a: any, b: any) => a.i - b.i);
+    if (parts.length !== meta.chunks) return res.status(500).json({ error: 'Backup incompleto no banco de dados.' });
+    const json = zlib.gunzipSync(Buffer.from(parts.map((p: any) => p.data).join(''), 'base64'));
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=Backup_Automatico_VV_${meta.id}.json`);
+    res.send(json);
+  }));
 
   const ts = (o: any) => new Date(o?.updatedAt || o?.createdAt || 0).getTime() || 0;
   function mergeOrder(ex: any | undefined, inc: any) {
@@ -870,5 +1043,5 @@ export function createApp(store: Store, opts: AppOptions) {
     res.status(503).json({ error: 'Falha ao falar com o banco de dados. Tente novamente.' });
   });
 
-  return { app, state };
+  return { app, state, ensureDailyBackup, runPrefetch };
 }

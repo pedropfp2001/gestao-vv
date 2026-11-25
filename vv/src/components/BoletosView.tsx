@@ -39,6 +39,7 @@ import { safeFetch } from '../utils/apiClient';
 import { matchesBoletoSearch } from '../utils/searchHelper';
 import { BoletoUploadModal } from './BoletoUploadModal';
 import { BoletoBatchUploadModal } from './BoletoBatchUploadModal';
+import { DuplicateBoletosModal } from './DuplicateBoletosModal';
 import { PdfViewerModal } from './PdfViewerModal';
 import { BoletosReportModal } from './BoletosReportModal';
 
@@ -65,6 +66,7 @@ export const BoletosView: React.FC<BoletosViewProps> = ({
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isBatchUploadOpen, setIsBatchUploadOpen] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [isDupOpen, setIsDupOpen] = useState(false);
   const [editingBoleto, setEditingBoleto] = useState<OverdueBoleto | null>(null);
 
   // PDF Viewer Modal
@@ -354,6 +356,15 @@ export const BoletosView: React.FC<BoletosViewProps> = ({
 
             {isGestao && (
               <>
+            <button
+              onClick={() => setIsDupOpen(true)}
+              className="px-3 sm:px-4 py-2 sm:py-2.5 bg-white/10 hover:bg-white/20 border border-white/20 text-white rounded-xl sm:rounded-2xl font-bold text-xs flex items-center gap-1.5 sm:gap-2 transition-all cursor-pointer"
+              title="Procurar e remover boletos lançados em duplicidade"
+            >
+              <Trash2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-red-200" />
+              <span>Remover duplicados</span>
+            </button>
+
             <button
               onClick={() => setIsBatchUploadOpen(true)}
               className="px-3 sm:px-4 py-2 sm:py-2.5 bg-white/15 hover:bg-white/25 border border-white/30 text-white rounded-xl sm:rounded-2xl font-black text-xs flex items-center gap-1.5 sm:gap-2 transition-all shadow-md active:scale-98 cursor-pointer"
@@ -734,6 +745,7 @@ export const BoletosView: React.FC<BoletosViewProps> = ({
       />
 
       {/* Boletos Analytical Grid Report Modal */}
+      {isDupOpen && <DuplicateBoletosModal onClose={() => setIsDupOpen(false)} onChanged={async () => { await fetchBoletos(); onUpdateBoletos?.(); }} />}
       <BoletosReportModal
         isOpen={isReportModalOpen}
         onClose={() => setIsReportModalOpen(false)}

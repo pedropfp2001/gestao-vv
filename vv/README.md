@@ -58,3 +58,7 @@ npm test        # testes da API
 - Fotos ficam no Firestore (≤300 KB cada) e são apagadas quando o pedido é baixado.
 - Boletos: PDFs são enviados manualmente e apagados na baixa.
 - Se a cota gratuita do Firestore acabar, aparece um aviso vermelho e nenhuma gravação é perdida em silêncio.
+
+## Pré-leitura das mercadorias (economiza tempo e limite da IA)
+
+Com a IA ligada (`GEMINI_API_KEY`), o servidor lê sozinho, em segundo plano, as fotos dos pedidos em aberto das **marcas da lista salva** e das marcas com **3 ou mais pedidos**, 25 por vez, com pausa entre as leituras. Cada pedido é lido uma única vez (o resultado fica no pedido), então ao gerar o relatório "Relatórios…" os itens já estão prontos. Se a IA atingir o limite, a pré-leitura para e tenta de novo depois. Para desligar: variável `PREFETCH_ITEMS=off`. Ajuste o lote com `PREFETCH_PER_RUN` (padrão 25).

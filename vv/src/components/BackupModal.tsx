@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Order, OverdueBoleto, User } from '../types';
 import { formatCurrency } from '../utils/pdfGenerator';
 import { safeFetch } from '../utils/apiClient';
@@ -70,6 +70,42 @@ export const BackupModal: React.FC<BackupModalProps> = ({ orders, boletos = [], 
   const [preview, setPreview] = useState<Preview | null>(null);
   const [progress, setProgress] = useState('');
   const [archiveOk, setArchiveOk] = useState(false);
+  const [autoList, setAutoList] = useState<any[] | null>(null);
+
+  const loadAuto = async () => {
+    try {
+      const r = await fetch('/api/backups', { cache: 'no-store' });
+      if (r.ok) setAutoList(await r.json()); else setAutoList([]);
+    } catch { setAutoList([]); }
+  };
+  useEffect(() => { void loadAuto(); const t = setTimeout(loadAuto, 4000); return () => clearTimeout(t); }, []);
+
+  const downloadAuto = async (id: string) => {
+    setBusy('auto-' + id); setMsg(null);
+    try {
+      const r = await fetch(`/api/backups/${encodeURIComponent(id)}/download`);
+      if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || `Erro ${r.status}`);
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `Backup_Automatico_VV_${id}.json`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 15000);
+    } catch (e: any) { setMsg({ type: 'err', text: `Não foi possível baixar o backup: ${e?.message || e}` }); }
+    finally { setBusy(null); }
+  };
+
+  const backupNow = async () => {
+    setBusy('auto-now'); setMsg(null);
+    try {
+      const r = await fetch('/api/backups', { method: 'POST' });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || `Erro ${r.status}`);
+      setMsg({ type: 'ok', text: 'Backup guardado no sistema.' });
+      await loadAuto();
+    } catch (e: any) { setMsg({ type: 'err', text: `Não foi possível fazer o backup: ${e?.message || e}` }); }
+    finally { setBusy(null); }
+  };
+
+  const fmtWhen = (iso: string) => { const d = new Date(iso); return isNaN(d.getTime()) ? iso : d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' }); };
 
   const open = orders.filter((o) => o.status === 'em_aberto');
   const settled = orders.filter((o) => o.status === 'baixado');
@@ -205,6 +241,30 @@ export const BackupModal: React.FC<BackupModalProps> = ({ orders, boletos = [], 
               <span>{msg.text}</span>
             </div>
           )}
+
+          <section className="space-y-2">
+            <h3 className="text-sm font-black text-slate-800">Backup automático (todo dia)</h3>
+            <p className="text-xs text-slate-500">O sistema guarda sozinho 1 backup completo por dia (no primeiro acesso da Gestão) e mantém os últimos 20. Baixe qualquer um e restaure em "Importar backup" abaixo.</p>
+            <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-48 overflow-y-auto">
+              {autoList === null ? (
+                <div className="p-3 text-xs text-slate-500 flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Carregando…</div>
+              ) : autoList.length === 0 ? (
+                <div className="p-3 text-xs text-slate-500">Ainda não há backup guardado. O primeiro é feito automaticamente.</div>
+              ) : autoList.map((m) => (
+                <div key={m.id} className="px-3 py-2 flex items-center gap-3 text-xs">
+                  <span className="font-bold text-slate-800">{fmtWhen(m.createdAt)}</span>
+                  <span className="text-slate-500">{m.orders} pedidos · {m.boletos} boletos</span>
+                  <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold ${m.auto ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}>{m.auto ? 'automático' : `manual (${m.createdBy})`}</span>
+                  <button disabled={!!busy} onClick={() => downloadAuto(m.id)} className="ml-auto px-2.5 py-1 rounded-lg bg-white border border-slate-300 hover:bg-slate-50 font-bold text-slate-700 flex items-center gap-1 cursor-pointer disabled:opacity-50">
+                    {busy === 'auto-' + m.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />} Baixar
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button disabled={!!busy} onClick={backupNow} className={`${btn} bg-emerald-700 hover:bg-emerald-800 text-white`}>
+              {busy === 'auto-now' ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />} Guardar um backup agora no sistema
+            </button>
+          </section>
 
           <section className="space-y-2">
             <h3 className="text-sm font-black text-slate-800">1. Fazer backup</h3>

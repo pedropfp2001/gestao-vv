@@ -449,7 +449,7 @@ const dmy2 = (d: Date) => {
 export interface ExtratoResultado { clientes: number; itensLidos: number; semItens: number; motivo?: string }
 
 /** Lê (uma por vez, pela IA do servidor) os itens dos pedidos que ainda não têm; guarda no pedido para não reler. */
-async function carregarItens(
+export async function carregarItens(
   orders: Order[],
   onProgress?: (done: number, total: number) => void
 ): Promise<{ itens: Map<string, { itens: ItemPedido[]; bilhete?: string; vencimento?: string }>; lidos: number; falhas: number; motivo?: string }> {
@@ -501,7 +501,9 @@ export async function generateExtratoClientesPDF(
   action: 'download' | 'share' = 'download',
   /** lista de marcas escolhidas (qualquer quantidade de pedidos) ou um número = mínimo de pedidos em aberto */
   selecao: string[] | number = 3,
-  onProgress?: (done: number, total: number) => void
+  onProgress?: (done: number, total: number) => void,
+  /** itens já lidos e conferidos (se vier, não lê de novo) */
+  itensPre?: Map<string, { itens: ItemPedido[]; bilhete?: string; vencimento?: string }>
 ): Promise<ExtratoResultado> {
   const minOrders = typeof selecao === 'number' ? selecao : 1;
   const wanted = Array.isArray(selecao) ? new Set(selecao.map((b) => b.trim().toUpperCase())) : null;
@@ -523,7 +525,9 @@ export async function generateExtratoClientesPDF(
   }
 
   // só os pedidos dos clientes que entram no relatório precisam ter os itens lidos
-  const { itens: itensMap, lidos, falhas, motivo } = await carregarItens(clients.flatMap((c) => c.list), onProgress);
+  const { itens: itensMap, lidos, falhas, motivo } = itensPre
+    ? { itens: itensPre, lidos: 0, falhas: 0, motivo: undefined as string | undefined }
+    : await carregarItens(clients.flatMap((c) => c.list), onProgress);
 
   const PW = 297, M = 8;
   const hoje = parseIsoDate(todayIso());
