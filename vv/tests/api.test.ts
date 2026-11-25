@@ -557,6 +557,30 @@ test('pré-leitura: lê só marcas da lista salva ou com 3+ pedidos, uma vez, e 
   (srv as any).closeAllConnections?.(); srv.close();
 });
 
+test('lê a foto logo que o pedido é lançado (em segundo plano) e respeita o teto do dia', async () => {
+  let chamadas = 0;
+  const mock = async () => { chamadas++; return { bilhete: 'N1', itens: [{ mercadoria: 'LIMAO', un: 'CX', quantidade: 2, preco: 50, total: 100 }] }; };
+  const a = createApp(new MemoryStore(), { sessionSecret: 'x', extractor: null, itemsExtractor: mock, lerAoCriar: true });
+  await a.state.load();
+  const srv = await new Promise<any>((r) => { const s = a.app.listen(0, () => r(s)); });
+  const b = `http://127.0.0.1:${srv.address().port}`;
+  const l = await fetch(b + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Pedro', password: '3220' }) });
+  const pc = (l.headers.get('set-cookie') || '').split(';')[0];
+  const call = (m: string, path: string, body?: any) => fetch(b + path, { method: m, headers: { cookie: pc, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const novo = await (await call('POST', '/api/orders', { marca: 'NOVA', data: '2026-11-25', valor: 100, vendedor: 'Ricardo', imageUrl: PNG, clientId: 'abc123' })).json();
+  await call('POST', '/api/orders', { marca: 'NOVA', data: '2026-11-25', valor: 100, vendedor: 'Ricardo', imageUrl: PNG, clientId: 'abc123' }); // repetido: não conta nem lê de novo
+  await a.aguardarLeituras();
+  assert.equal(chamadas, 1);
+  const lista: any[] = await (await call('GET', '/api/orders')).json();
+  assert.equal(lista.find((o) => o.id === novo.id).itens?.length, 1);
+  // teto do dia = 1: o próximo pedido não é lido (fica para o relatório/pré-leitura)
+  await call('PUT', '/api/prefetch/config', { limiteDia: 1 });
+  await call('POST', '/api/orders', { marca: 'OUTRA', data: '2026-11-25', valor: 50, vendedor: 'Ricardo', imageUrl: PNG });
+  await a.aguardarLeituras();
+  assert.equal(chamadas, 1);
+  (srv as any).closeAllConnections?.(); srv.close();
+});
+
 test('horário da pré-leitura: semana, sábado mais curto, domingo desligado (fuso de São Paulo)', async () => {
   const cfg = DEFAULT_PREFETCH_CONFIG; // seg-sex 8-17, sáb 8-13, dom off
   const sp = (iso: string) => new Date(iso); // UTC-3: 11:00Z = 08:00 em SP

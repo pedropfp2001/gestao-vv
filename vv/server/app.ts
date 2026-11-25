@@ -26,6 +26,7 @@ export interface AppOptions {
   staticDir?: string;
   extractor?: Extractor | null; // IA opcional (padrão: Gemini se GEMINI_API_KEY existir)
   prefetchGapMs?: number; // pausa entre leituras da pré-leitura (testes usam 0)
+  lerAoCriar?: boolean; // lê as mercadorias da foto logo que o pedido é lançado (em segundo plano)
   itemsExtractor?: ItemsExtractor | null; // leitura dos itens (mercadorias) para o extrato
 }
 
@@ -289,6 +290,26 @@ export function createApp(store: Store, opts: AppOptions) {
     return state.prefetchUso;
   };
   const salvarUso = async () => { try { await store.set('settings', 'prefetchUso', { ...state.prefetchUso }); } catch { /* o contador em memória continua valendo */ } };
+  // Lê a foto logo depois do lançamento (fila de uma por vez, em segundo plano), para o pedido já estar lido na hora de enviar.
+  // Respeita o teto do dia e para quando o Gemini avisa que o limite acabou; qualquer falha é ignorada (o relatório lê na hora, como antes).
+  let filaLeitura: Promise<void> = Promise.resolve();
+  const lerAposLancar = (id: string) => {
+    if (!opts.lerAoCriar || !itemsExtractor) return;
+    filaLeitura = filaLeitura.then(async () => {
+      const uso = usoHoje();
+      if (uso.esgotado || uso.usados >= state.prefetchConfig.limiteDia) return;
+      const o: any = state.orders.get(id);
+      if (!o || o.status !== 'em_aberto' || jaLido(o) || !o.imageUrl) return;
+      try {
+        const r = await lerItens(o);
+        if (r) { uso.usados++; await salvarUso(); }
+      } catch (e: any) {
+        uso.usados++;
+        if (e instanceof ExtractError && e.status === 429) uso.esgotado = true;
+        await salvarUso();
+      }
+    }).catch(() => { /* nunca derruba o servidor */ });
+  };
   async function runPrefetch(): Promise<typeof prefetchInfo> {
     if (!itemsExtractor || !state.ready || prefetchInfo.rodando) return prefetchInfo;
     const uso = usoHoje();
@@ -406,6 +427,7 @@ export function createApp(store: Store, opts: AppOptions) {
       return { order, created: true };
     });
     res.status(result.created ? 201 : 200).json(orderView(result.order));
+    if (result.created) lerAposLancar(result.order.id);
   }));
 
   const settleOne = (cur: any, opts2: { amount?: number; tipo?: string; por: string; obs?: string; lote?: boolean }) => {
@@ -1077,5 +1099,5 @@ export function createApp(store: Store, opts: AppOptions) {
 
   /** Chamada a cada poucos minutos: só lê dentro do horário configurado (pedidos novos entram nas próximas rodadas). */
   const runScheduledPrefetch = async () => { if (dentroDaJanela(state.prefetchConfig)) await runPrefetch(); };
-  return { app, state, ensureDailyBackup, runPrefetch, runScheduledPrefetch };
+  return { app, state, aguardarLeituras: () => filaLeitura, ensureDailyBackup, runPrefetch, runScheduledPrefetch };
 }

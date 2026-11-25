@@ -28,6 +28,7 @@ async function main() {
     sessionSecret: secret,
     secureCookies: isProd,
     staticDir: path.join(process.cwd(), 'dist'),
+    lerAoCriar: process.env.READ_ON_CREATE !== 'off',
   });
   app.listen(PORT, '0.0.0.0', () => console.log(`[SERVER] Escutando na porta ${PORT}`));
 

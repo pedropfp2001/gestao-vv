@@ -70,3 +70,7 @@ A pré-leitura roda sozinha a cada 10 minutos **só dentro do horário configura
 ### Chave separada para os relatórios (opcional)
 
 Para a pré-leitura/relatórios nunca consumirem o limite do lançamento por IA, crie uma segunda chave **em outro projeto do Google** (no AI Studio: *Get API key → Create API key → Create API key in new project*) e coloque-a no Render em `GEMINI_ITEMS_API_KEY`. O limite do Gemini é por **projeto**, não por chave: duas chaves do mesmo projeto dividem o mesmo limite. Sem `GEMINI_ITEMS_API_KEY`, tudo usa a `GEMINI_API_KEY`.
+
+
+### Leitura logo após lançar o pedido
+Quando um pedido é lançado, o servidor já começa a ler as mercadorias da foto em segundo plano (uma de cada vez, sem atrasar o lançamento). Assim o pedido costuma estar lido quando você abre o relatório. Conta no teto de leituras do dia e para se o Gemini avisar que o limite acabou. Para desligar: variável `READ_ON_CREATE=off` no Render.
