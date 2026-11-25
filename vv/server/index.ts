@@ -24,7 +24,7 @@ async function main() {
   } else {
     store = await FirestoreStore.create();
   }
-  const { app, state, ensureDailyBackup, runPrefetch } = createApp(store, {
+  const { app, state, ensureDailyBackup, runScheduledPrefetch } = createApp(store, {
     sessionSecret: secret,
     secureCookies: isProd,
     staticDir: path.join(process.cwd(), 'dist'),
@@ -47,8 +47,8 @@ async function main() {
     setInterval(() => void ensureDailyBackup(), 30 * 60 * 1000);
     // pré-leitura das fotos das marcas da lista salva e das com 3+ pedidos (desliga com PREFETCH_ITEMS=off)
     if (process.env.PREFETCH_ITEMS !== 'off') {
-      setTimeout(() => void runPrefetch(), 60 * 1000);
-      setInterval(() => void runPrefetch(), 30 * 60 * 1000);
+      setTimeout(() => void runScheduledPrefetch(), 60 * 1000);
+      setInterval(() => void runScheduledPrefetch(), 10 * 60 * 1000); // só roda dentro do horário configurado
     }
   });
 }

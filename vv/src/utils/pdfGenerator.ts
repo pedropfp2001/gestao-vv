@@ -1,3 +1,4 @@
+import { savePdf } from './reportPreview';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Order, CustomerSummary, OverdueBoleto, ItemPedido } from '../types';
@@ -150,7 +151,7 @@ function emptyReport(doc: jsPDF) {
 async function finish(doc: jsPDF, filename: string, action: 'download' | 'share') {
   footers(doc);
   if (action === 'share') await sharePDFDoc(doc, filename);
-  else doc.save(filename);
+  else savePdf(doc, filename);
 }
 
 const tableBase = {
@@ -637,7 +638,7 @@ export async function generateExtratoClientesPDF(
   const files = clients.map(({ marca, list }) => ({ nome: nomeArquivo(marca), doc: buildClientDoc(marca, list) }));
   // um PDF separado por marca, baixados um após o outro (sem .zip)
   for (let i = 0; i < files.length; i++) {
-    files[i].doc.save(files[i].nome);
+    savePdf(files[i].doc, files[i].nome);
     if (i < files.length - 1) await new Promise((r) => setTimeout(r, 600));
   }
   return { clientes: clients.length, itensLidos: lidos, semItens, motivo: falhas > 0 ? motivo : undefined };
@@ -846,7 +847,7 @@ export async function generateFinancialSummaryPDF(summaries: CustomerSummary[], 
   if (action === 'share') {
     await sharePDFDoc(doc, filename);
   } else {
-    doc.save(filename);
+    savePdf(doc, filename);
   }
 }
 

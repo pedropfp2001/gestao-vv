@@ -25,6 +25,9 @@ import { RefreshReminder } from './components/RefreshReminder';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { formatCurrency, generateOpenOrdersGridPDF, generateOverdueBoletosGridPDF, generateSelectedBrandsPDF, getFreshestBoletos, generateBothOpenOrdersReports, setReportUser, setSavedBrandsForReports } from './utils/pdfGenerator';
 import { safeFetch, getFailedSyncQueue, clearFailedSyncQueue, SyncErrorRecord } from './utils/apiClient';
+import { ReportPreviewModal } from './components/ReportPreviewModal';
+import { PreleituraPainel } from './components/PreleituraPainel';
+import { runReport, setPreviewEnabled, setPreviewListener, PreviewFile } from './utils/reportPreview';
 import { matchesBrandOrValue as matchesOrderSearch } from './utils/searchHelper';
 import {
   Search,
@@ -145,12 +148,19 @@ export default function App() {
 
   useEffect(() => { setSavedBrandsForReports(savedBrands); }, [savedBrands]);
 
+  // Painel da pré-leitura: recurso em teste, só para estes usuários (para liberar, é só acrescentar os nomes). A pré-visualização vale para todos.
+  const isBeta = ['Pedro'].includes(cu.name);
+  const [previewOn, setPreviewOn] = useState<boolean>(() => { try { return localStorage.getItem('vv_preview') === '1'; } catch { return false; } });
+  const [previewFiles, setPreviewFiles] = useState<PreviewFile[] | null>(null);
+  useEffect(() => { setPreviewEnabled(previewOn); try { localStorage.setItem('vv_preview', previewOn ? '1' : '0'); } catch { /* ignore */ } }, [isBeta, previewOn]);
+  useEffect(() => { setPreviewListener((f) => setPreviewFiles(f)); return () => setPreviewListener(() => {}); }, []);
+
   const handleDownloadSavedBrands = async () => {
     if (!savedBrands.length) { setShowBrandPicker(true); return; }
     setDownloadingSaved(true);
     try {
       setReportUser(cu.name);
-      await generateSelectedBrandsPDF(userVisibleOrders, savedBrands, 'download', true);
+      await runReport(() => generateSelectedBrandsPDF(userVisibleOrders, savedBrands, 'download', true));
       setToastMessage({ message: `Relatório gerado: ${savedBrands.length} marcas salvas + marcas com 1 pedido.`, type: 'success' });
     } catch (err) {
       console.error('Erro ao gerar relatório das marcas salvas:', err);
@@ -165,7 +175,7 @@ export default function App() {
     setDownloadingBothReports(true);
     try {
       setReportUser(cu.name);
-      await generateBothOpenOrdersReports(ensureOrdersArray(orders).filter((o) => o.status === 'em_aberto'), 'download', undefined, boletosList);
+      await runReport(() => generateBothOpenOrdersReports(ensureOrdersArray(orders).filter((o) => o.status === 'em_aberto'), 'download', undefined, boletosList));
       setToastMessage({ message: '3 relatórios gerados (1 pedido + selecionadas, 2+ pedidos e boletos).', type: 'success' });
     } catch (err) {
       console.error('Erro ao baixar relatórios consolidados:', err);
@@ -695,16 +705,23 @@ export default function App() {
               <button onClick={() => setShowExtratoPicker(true)} className="text-left px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer">
                 <Download className="w-4 h-4 shrink-0" /><span>Relatórios…<span className="block text-[10px] font-semibold opacity-70">com mercadorias lidas da foto</span></span>
               </button>
-              <button onClick={() => { setReportUser(cu.name); generateOpenOrdersGridPDF(userVisibleOrders, 'download', '1_only'); }} className="text-left px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer">
+              <button onClick={() => { setReportUser(cu.name); runReport(() => generateOpenOrdersGridPDF(userVisibleOrders, 'download', '1_only')); }} className="text-left px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer">
                 <Download className="w-4 h-4 shrink-0" /><span>Marcas com 1 Pedido</span>
               </button>
-              <button onClick={async () => { setReportUser(cu.name); await generateOverdueBoletosGridPDF(await getFreshestBoletos(), 'download'); }} className="text-left px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer">
+              <button onClick={async () => { setReportUser(cu.name); await runReport(async () => generateOverdueBoletosGridPDF(await getFreshestBoletos(), 'download')); }} className="text-left px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer">
                 <Download className="w-4 h-4 shrink-0" /><span>Boletos em Atraso</span>
               </button>
               <button onClick={() => setIsOpenOrdersReportModalOpen(true)} className="text-left px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-900 border border-slate-300 rounded-xl font-bold text-xs flex items-center gap-2 cursor-pointer" title="Relatório de Pedidos em Aberto por Marca (Grade)">
                 <TableIcon className="w-4 h-4 shrink-0" /><span>Relatório Grade</span>
               </button>
             </div>
+            {(
+              <label className="mt-3 flex items-start gap-2 px-1 text-[11px] font-bold text-slate-700 cursor-pointer">
+                <input type="checkbox" className="mt-0.5" checked={previewOn} onChange={(e) => setPreviewOn(e.target.checked)} />
+                <span>Pré-visualizar antes de baixar<span className="block text-[10px] font-semibold text-slate-400">abre o relatório para conferir</span></span>
+              </label>
+            )}
+            {isBeta && <PreleituraPainel />}
           </aside>
           <div className="space-y-2.5 sm:space-y-6 flex-1 min-w-0">
             {/* Filter and stats toolbar */}
@@ -1129,7 +1146,7 @@ export default function App() {
                   <span>Visualizar Grade</span>
                 </button>
                 <button
-                  onClick={() => { setReportUser(cu.name); generateOpenOrdersGridPDF(userVisibleOrders, 'download', '2+'); }}
+                  onClick={() => { setReportUser(cu.name); runReport(() => generateOpenOrdersGridPDF(userVisibleOrders, 'download', '2+')); }}
                   className="px-5 py-2.5 bg-white hover:bg-red-50 text-red-900 rounded-2xl font-black text-xs flex items-center gap-2 transition-all shadow-md"
                 >
                   <Download className="w-4 h-4 text-red-900 stroke-[3]" />
@@ -1142,13 +1159,13 @@ export default function App() {
               <h3 className="text-sm font-black text-slate-800 mb-3">Outros relatórios em PDF</h3>
               <div className="flex flex-wrap gap-3">
                 <button
-                  onClick={() => { setReportUser(cu.name); generateOpenOrdersGridPDF(userVisibleOrders, 'download', '1_only'); }}
+                  onClick={() => { setReportUser(cu.name); runReport(() => generateOpenOrdersGridPDF(userVisibleOrders, 'download', '1_only')); }}
                   className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl font-bold text-xs flex items-center gap-2 cursor-pointer"
                 >
                   <Download className="w-4 h-4" /> Marcas com 1 Pedido
                 </button>
                 <button
-                  onClick={async () => { setReportUser(cu.name); await generateOverdueBoletosGridPDF(await getFreshestBoletos(), 'download'); }}
+                  onClick={async () => { setReportUser(cu.name); await runReport(async () => generateOverdueBoletosGridPDF(await getFreshestBoletos(), 'download')); }}
                   className="px-4 py-2.5 bg-red-700 hover:bg-red-800 text-white rounded-2xl font-bold text-xs flex items-center gap-2 cursor-pointer"
                 >
                   <Download className="w-4 h-4" /> Boletos em Atraso
@@ -1198,6 +1215,7 @@ export default function App() {
       </footer>
 
       {/* Modals */}
+      {previewFiles && <ReportPreviewModal files={previewFiles} onClose={() => setPreviewFiles(null)} />}
       {showExtratoPicker && <SelectBrandsReportModal mode="extrato" canEditItens={cu.role === 'admin'} orders={userVisibleOrders} onClose={() => setShowExtratoPicker(false)} onBeforeGenerate={() => setReportUser(cu.name)} />}
       {showBrandPicker && (
         <SelectBrandsReportModal orders={userVisibleOrders} onClose={() => setShowBrandPicker(false)} onBeforeGenerate={() => setReportUser(cu.name)} savedBrands={savedBrands} canSave={cu.role === 'admin'} onSaved={setSavedBrands} />

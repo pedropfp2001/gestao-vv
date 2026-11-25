@@ -4,6 +4,7 @@ import type { Server } from 'node:http';
 import { createApp } from '../server/app';
 import { MemoryStore } from '../server/store';
 import { ExtractError } from '../server/extract';
+import { dentroDaJanela, DEFAULT_PREFETCH_CONFIG } from '../server/state';
 
 let server: Server;
 let base = '';
@@ -534,9 +535,12 @@ test('pré-leitura: lê só marcas da lista salva ou com 3+ pedidos, uma vez, e 
   await mk('SALVA');                                    // 1 pedido, mas na lista salva: entra
   await mk('SOLTA');                                    // 1 pedido, fora da lista: não entra
   await call('PUT', '/api/report-brands', { brands: ['SALVA'] });
-  assert.equal((await (await call('GET', '/api/prefetch/status')).json() as any).pendentes, 4);
+  const st0: any = await (await call('GET', '/api/prefetch/status')).json();
+  assert.equal(st0.pendentes, 4); assert.equal(st0.total, 4); assert.equal(st0.lidos, 0);
   await a.runPrefetch();
   assert.equal(chamadas, 4);
+  const st1: any = await (await call('GET', '/api/prefetch/status')).json();
+  assert.equal(st1.lidos, 4); assert.equal(st1.pendentes, 0); assert.equal(st1.feitos, 4);
   const lista: any[] = await (await call('GET', '/api/orders')).json();
   assert.equal(lista.filter((o) => o.itens?.length).length, 4);
   assert.ok(!lista.find((o) => o.marca === 'SOLTA').itens);
@@ -551,4 +555,32 @@ test('pré-leitura: lê só marcas da lista salva ou com 3+ pedidos, uma vez, e 
   const pre = await call('POST', '/api/prefetch/run');
   assert.equal(pre.status, 200);
   (srv as any).closeAllConnections?.(); srv.close();
+});
+
+test('horário da pré-leitura: semana, sábado mais curto, domingo desligado (fuso de São Paulo)', async () => {
+  const cfg = DEFAULT_PREFETCH_CONFIG; // seg-sex 8-19, sáb 8-13, dom off
+  const sp = (iso: string) => new Date(iso); // UTC-3: 11:00Z = 08:00 em SP
+  assert.equal(dentroDaJanela(cfg, sp('2026-11-23T10:59:00Z')), false); // segunda 07:59
+  assert.equal(dentroDaJanela(cfg, sp('2026-11-23T11:00:00Z')), true);  // segunda 08:00
+  assert.equal(dentroDaJanela(cfg, sp('2026-11-23T21:59:00Z')), true);  // segunda 18:59
+  assert.equal(dentroDaJanela(cfg, sp('2026-11-23T22:00:00Z')), false); // segunda 19:00
+  assert.equal(dentroDaJanela(cfg, sp('2026-11-28T15:59:00Z')), true);  // sábado 12:59
+  assert.equal(dentroDaJanela(cfg, sp('2026-11-28T16:00:00Z')), false); // sábado 13:00 (turno curto)
+  assert.equal(dentroDaJanela(cfg, sp('2026-11-29T15:00:00Z')), false); // domingo 12:00
+  assert.equal(dentroDaJanela({ ...cfg, domingo: true }, sp('2026-11-29T15:00:00Z')), true);
+});
+
+test('configuração do horário e status da pré-leitura: só a gestão; valores inválidos são corrigidos', async () => {
+  const pedro = await as('Pedro', '3220');
+  const ric = await as('Ricardo', '1234');
+  assert.equal((await ric.get('/api/prefetch/status')).status, 403);
+  assert.equal((await ric.put('/api/prefetch/config', { semana: { inicio: 9, fim: 17 } })).status, 403);
+  const ok = (await pedro.put('/api/prefetch/config', { semana: { inicio: 7, fim: 25 }, sabado: { inicio: 10, fim: 9 }, domingo: true })).data;
+  assert.equal(ok.semana.inicio, 7); assert.equal(ok.semana.fim, 19);   // 25 inválido -> padrão
+  assert.ok(ok.sabado.fim > ok.sabado.inicio);                          // fim <= início é corrigido
+  assert.equal(ok.domingo, true);
+  const st = (await pedro.get('/api/prefetch/status')).data;
+  for (const k of ['ativo', 'pendentes', 'total', 'lidos', 'rodando', 'naJanela', 'config']) assert.ok(k in st, k);
+  assert.equal(st.config.semana.inicio, 7);
+  await pedro.put('/api/prefetch/config', DEFAULT_PREFETCH_CONFIG);
 });

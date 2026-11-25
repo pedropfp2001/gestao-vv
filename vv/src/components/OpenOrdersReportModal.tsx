@@ -1,3 +1,4 @@
+import { runReport } from '../utils/reportPreview';
 import React, { useState } from 'react';
 import {
   X,
@@ -118,7 +119,7 @@ export const OpenOrdersReportModal: React.FC<OpenOrdersReportModalProps> = ({
   const handleDownloadPDF = async () => {
     setDownloading(true);
     try {
-      await generateOpenOrdersGridPDF(openOrders, 'download', minOrdersFilter);
+      await runReport(() => generateOpenOrdersGridPDF(openOrders, 'download', minOrdersFilter));
     } finally {
       setDownloading(false);
     }
@@ -128,9 +129,9 @@ export const OpenOrdersReportModal: React.FC<OpenOrdersReportModalProps> = ({
     setDownloadingBoth(true);
     setBothStatusMsg('Iniciando geração dos 3 relatórios (1 Pedido, 2+ Pedidos e Boletos em Atraso)...');
     try {
-      await generateBothOpenOrdersReports(openOrders, 'download', (msg) => {
+      await runReport(() => generateBothOpenOrdersReports(openOrders, 'download', (msg) => {
         setBothStatusMsg(msg);
-      });
+      }));
       setBothStatusMsg('✅ 3 Relatórios baixados com sucesso (1 Pedido, 2+ Pedidos e Boletos em Atraso)!');
       setTimeout(() => setBothStatusMsg(null), 5000);
     } catch (err) {

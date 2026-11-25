@@ -3,6 +3,7 @@ import express, { Request, Response, NextFunction, RequestHandler } from 'expres
 import path from 'node:path';
 import fs from 'node:fs';
 import type { Order, OverdueBoleto, AppNotification } from '../src/types';
+import { dentroDaJanela, mergePrefetchConfig } from './state';
 import { Store, StoreQuotaError, WriteOp } from './store';
 import { State, UserDoc } from './state';
 import { makeGeminiExtractor, makeGeminiItemsExtractor, ExtractError, Extractor, ItemsExtractor } from './extract';
@@ -269,7 +270,7 @@ export function createApp(store: Store, opts: AppOptions) {
   const PREFETCH_PER_RUN = Number(process.env.PREFETCH_PER_RUN || 25);
   const PREFETCH_GAP_MS = opts.prefetchGapMs ?? 4000; // pausa entre leituras: respeita o limite por minuto do Gemini
   const prefetchFail = new Map<string, number>();    // pedido -> quando falhou (não insiste por 6h)
-  const prefetchInfo: any = { rodando: false, ultimaExecucao: null as string | null, lidosNaUltima: 0, motivo: '' };
+  const prefetchInfo: any = { rodando: false, ultimaExecucao: null as string | null, lidosNaUltima: 0, motivo: '', fila: 0, feitos: 0 };
   const prefetchAlvo = () => {
     const abertos = state.ordersList().filter((o: any) => o.status === 'em_aberto' && !(o.valorPago && o.valorPago >= o.valor));
     const porMarca = new Map<string, number>();
@@ -277,15 +278,18 @@ export function createApp(store: Store, opts: AppOptions) {
     const lista = new Set((state.reportBrands?.brands || []).map((b: string) => normalizeBrandName(b).toUpperCase()));
     return abertos.filter((o: any) => {
       const k = normalizeBrandName(o.marca || '').toUpperCase();
-      return (lista.has(k) || (porMarca.get(k) || 0) >= 3) && !(Array.isArray(o.itens) && o.itens.length);
+      return lista.has(k) || (porMarca.get(k) || 0) >= 3;
     });
   };
+  const jaLido = (o: any) => Array.isArray(o.itens) && o.itens.length > 0;
+  const prefetchPendentes = () => prefetchAlvo().filter((o: any) => !jaLido(o));
   async function runPrefetch(): Promise<typeof prefetchInfo> {
     if (!itemsExtractor || !state.ready || prefetchInfo.rodando) return prefetchInfo;
-    prefetchInfo.rodando = true; prefetchInfo.lidosNaUltima = 0; prefetchInfo.motivo = '';
+    prefetchInfo.rodando = true; prefetchInfo.lidosNaUltima = 0; prefetchInfo.motivo = ''; prefetchInfo.fila = 0; prefetchInfo.feitos = 0;
     try {
       const agora = Date.now();
-      const fila = prefetchAlvo().filter((o: any) => agora - (prefetchFail.get(o.id) || 0) > 6 * 3600 * 1000).slice(0, PREFETCH_PER_RUN);
+      const fila = prefetchPendentes().filter((o: any) => agora - (prefetchFail.get(o.id) || 0) > 6 * 3600 * 1000).slice(0, PREFETCH_PER_RUN);
+      prefetchInfo.fila = fila.length;
       for (const o of fila) {
         try {
           const r = await lerItens(o);
@@ -294,16 +298,30 @@ export function createApp(store: Store, opts: AppOptions) {
           prefetchFail.set(o.id, Date.now());
           if (e instanceof ExtractError && (e.status === 429 || e.status === 403 || e.status === 400)) { prefetchInfo.motivo = e.message; break; } // limite/chave: para e tenta mais tarde
         }
+        prefetchInfo.feitos++;
         if (PREFETCH_GAP_MS) await new Promise((r) => setTimeout(r, PREFETCH_GAP_MS));
       }
     } finally { prefetchInfo.rodando = false; prefetchInfo.ultimaExecucao = new Date().toISOString(); }
     return prefetchInfo;
   }
-  app.get('/api/prefetch/status', requireGestao, (_req, res) => res.json({ ativo: !!itemsExtractor, pendentes: itemsExtractor ? prefetchAlvo().length : 0, ...prefetchInfo }));
+  app.get('/api/prefetch/status', requireGestao, (_req, res) => {
+    const alvo = itemsExtractor ? prefetchAlvo() : [];
+    const pendentes = alvo.filter((o: any) => !jaLido(o)).length;
+    res.json({
+      ativo: !!itemsExtractor, total: alvo.length, lidos: alvo.length - pendentes, pendentes, ...prefetchInfo,
+      naJanela: dentroDaJanela(state.prefetchConfig), config: state.prefetchConfig, agora: new Date().toISOString(),
+    });
+  });
+  app.put('/api/prefetch/config', requireGestao, wrap(async (req, res) => {
+    const cfg = mergePrefetchConfig(req.body);
+    await store.set('settings', 'prefetchConfig', { ...cfg, updatedAt: new Date().toISOString(), updatedBy: String(req.user) });
+    state.prefetchConfig = cfg;
+    res.json(cfg);
+  }));
   app.post('/api/prefetch/run', requireGestao, wrap(async (_req, res) => {
     if (!itemsExtractor) return res.status(503).json({ error: 'Leitura por IA não está ativada (falta GEMINI_API_KEY).' });
     void runPrefetch(); // roda em segundo plano
-    res.json({ iniciado: true, pendentes: prefetchAlvo().length });
+    res.json({ iniciado: true, pendentes: prefetchPendentes().length });
   }));
   /** Conferência: a gestão corrige os itens lidos pela IA e o sistema guarda a versão conferida. */
   app.put('/api/orders/:id/itens', requireGestao, wrap(async (req, res) => {
@@ -1043,5 +1061,7 @@ export function createApp(store: Store, opts: AppOptions) {
     res.status(503).json({ error: 'Falha ao falar com o banco de dados. Tente novamente.' });
   });
 
-  return { app, state, ensureDailyBackup, runPrefetch };
+  /** Chamada a cada poucos minutos: só lê dentro do horário configurado (pedidos novos entram nas próximas rodadas). */
+  const runScheduledPrefetch = async () => { if (dentroDaJanela(state.prefetchConfig)) await runPrefetch(); };
+  return { app, state, ensureDailyBackup, runPrefetch, runScheduledPrefetch };
 }

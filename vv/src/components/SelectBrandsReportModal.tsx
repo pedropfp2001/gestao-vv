@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { X, Search, Download, Share2, CheckSquare, Square, Save } from 'lucide-react';
 import { Order } from '../types';
 import { formatCurrency, generateSelectedBrandsPDF, generateExtratoClientesPDF, carregarItens } from '../utils/pdfGenerator';
+import { runReport } from '../utils/reportPreview';
 import { ConferenciaItensModal, ItensMap } from './ConferenciaItensModal';
 
 interface Props {
@@ -29,6 +30,7 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
   const savedBrands = extrato ? [] : savedProp;
   const canSave = extrato ? false : canSaveProp;
   const [progress, setProgress] = useState<string | null>(null);
+  const [pct, setPct] = useState(0);
   const [revisao, setRevisao] = useState<{ grupos: { marca: string; orders: Order[] }[]; itens: ItensMap; aviso?: string } | null>(null);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Set<string>>(() => new Set(savedBrands.map((b) => b.trim().toUpperCase())));
@@ -99,19 +101,20 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
         const grupos = chosen
           .map((b) => ({ marca: b.marca, orders: abertos.filter((o) => brandOf(o).toUpperCase() === b.key).sort((x, y) => x.data.localeCompare(y.data) || x.id.localeCompare(y.id)) }))
           .filter((g) => g.orders.length);
-        const r = await carregarItens(grupos.flatMap((g) => g.orders), (d, t) => setProgress(`Lendo itens ${d} de ${t}…`));
+        const r = await carregarItens(grupos.flatMap((g) => g.orders), (d, t) => { setProgress(`Lendo itens ${d} de ${t}…`); setPct(t ? Math.round((d / t) * 100) : 0); });
         setRevisao({
           grupos, itens: r.itens,
           aviso: r.falhas > 0 ? `${r.falhas} pedido(s) não puderam ser lidos pela IA.${r.motivo ? ' Motivo: ' + r.motivo : ''} Eles saem só com o valor total, ou você pode digitar os itens (Gestão).` : undefined,
         });
       } else {
-        await generateSelectedBrandsPDF(orders, chosen.map((b) => b.marca), action);
+        await runReport(() => generateSelectedBrandsPDF(orders, chosen.map((b) => b.marca), action));
       }
     } catch (e: any) {
       alert('Não foi possível gerar o relatório: ' + (e?.message || 'erro desconhecido'));
     } finally {
       setBusy(null);
       setProgress(null);
+      setPct(0);
     }
   };
 
@@ -122,7 +125,7 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
     setBusy('download');
     try {
       setProgress('Gerando PDFs…');
-      await generateExtratoClientesPDF(orders, 'download', revisao.grupos.map((g) => g.marca), undefined, itensFinal);
+      await runReport(() => generateExtratoClientesPDF(orders, 'download', revisao.grupos.map((g) => g.marca), undefined, itensFinal));
       setRevisao(null);
     } finally { setBusy(null); setProgress(null); }
   };
@@ -190,6 +193,12 @@ export const SelectBrandsReportModal: React.FC<Props> = ({ orders, onClose, onBe
             <span>{chosen.length} {chosen.length === 1 ? 'marca' : 'marcas'} · {totalPedidos} {totalPedidos === 1 ? 'pedido' : 'pedidos'}</span>
             <span className="text-red-800 text-sm font-black">{formatCurrency(totalValor)}</span>
           </div>
+          {extrato && busy === 'download' && progress && (
+            <div>
+              <div className="flex justify-between text-[11px] font-bold text-slate-600 mb-1"><span>{progress}</span><span>{pct}%</span></div>
+              <div className="h-2 rounded-full bg-slate-200 overflow-hidden"><div className="h-full bg-emerald-600 transition-all duration-300" style={{ width: `${pct}%` }} /></div>
+            </div>
+          )}
           {extrato && escolhidos.length > 0 && (
             <p className="text-[11px] text-slate-500 px-1">
               {jaLidos} de {escolhidos.length} pedidos já estão lidos (saem na hora){escolhidos.length - jaLidos > 0 ? `; ${escolhidos.length - jaLidos} ainda vão passar pela IA agora.` : '.'}

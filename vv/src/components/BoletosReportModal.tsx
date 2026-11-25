@@ -1,3 +1,4 @@
+import { runReport } from '../utils/reportPreview';
 import React, { useState } from 'react';
 import {
   X,
@@ -76,7 +77,7 @@ export const BoletosReportModal: React.FC<BoletosReportModalProps> = ({
       if (selectedVendedor !== 'todos') {
         targetList = targetList.filter((b) => b.vendedor.toLowerCase() === selectedVendedor.toLowerCase());
       }
-      await generateOverdueBoletosGridPDF(targetList, 'download');
+      await runReport(() => generateOverdueBoletosGridPDF(targetList, 'download'));
     } finally {
       setDownloading(false);
     }

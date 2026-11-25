@@ -62,3 +62,7 @@ npm test        # testes da API
 ## Pré-leitura das mercadorias (economiza tempo e limite da IA)
 
 Com a IA ligada (`GEMINI_API_KEY`), o servidor lê sozinho, em segundo plano, as fotos dos pedidos em aberto das **marcas da lista salva** e das marcas com **3 ou mais pedidos**, 25 por vez, com pausa entre as leituras. Cada pedido é lido uma única vez (o resultado fica no pedido), então ao gerar o relatório "Relatórios…" os itens já estão prontos. Se a IA atingir o limite, a pré-leitura para e tenta de novo depois. Para desligar: variável `PREFETCH_ITEMS=off`. Ajuste o lote com `PREFETCH_PER_RUN` (padrão 25).
+
+### Horário da pré-leitura
+
+A pré-leitura roda sozinha a cada 10 minutos **só dentro do horário configurado** (padrão: seg–sex 8h–19h, sábado 8h–13h, domingo desligado, fuso de São Paulo). O horário é editado pelo ícone de engrenagem no painel "Pré-leitura" (visível só para os usuários de teste definidos em `isBeta` no `src/App.tsx`; a pré-visualização dos PDFs vale para todos). No plano gratuito do Render o site "dorme" sem acessos: para ele estar acordado às 8h, use um monitor gratuito (UptimeRobot ou cron-job.org) chamando `https://SEU-SITE.onrender.com/api/status` a cada 10 minutos.
