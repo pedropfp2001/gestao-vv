@@ -75,7 +75,7 @@ export const ConferenciaItensModal: React.FC<Props> = ({ grupos, itens, canEdit,
   const inp = 'w-full px-1.5 py-1 border border-slate-200 rounded-md text-xs bg-white focus:outline-none focus:ring-1 focus:ring-slate-400';
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 bg-slate-900/70 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 bg-slate-900/70 backdrop-blur-sm" onClick={(e) => e.stopPropagation()}>
       <div className="bg-white w-full max-w-5xl max-h-[94vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden">
         <div className="flex items-start justify-between p-5 border-b border-slate-100">
           <div>
