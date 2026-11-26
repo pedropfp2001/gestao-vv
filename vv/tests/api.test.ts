@@ -581,6 +581,26 @@ test('lê a foto logo que o pedido é lançado (em segundo plano) e respeita o t
   (srv as any).closeAllConnections?.(); srv.close();
 });
 
+test('medidor de uso da IA: registra tokens, sobrecarga (503) e limite (429); o gráfico é só do Pedro', async () => {
+  const { makeGeminiItemsExtractor } = await import('../server/extract');
+  const eventos: any[] = [];
+  let n = 0;
+  const ok = { candidates: [{ content: { parts: [{ text: JSON.stringify({ itens: [{ mercadoria: 'A', quantidade: 1, preco: 1, total: 1 }] }) }] } }], usageMetadata: { promptTokenCount: 300, candidatesTokenCount: 40, thoughtsTokenCount: 10 } };
+  const fakeFetch: any = async () => { n++; return n === 1 ? { ok: false, status: 503, text: async () => '' } : { ok: true, status: 200, text: async () => '', json: async () => ok }; };
+  await makeGeminiItemsExtractor({ GEMINI_API_KEY: 'k', GEMINI_MODELS: 'm1', NODE_ENV: 'test' } as any, fakeFetch, (u) => eventos.push(u))!(PNG, 'preleitura');
+  assert.deepEqual(eventos.map((e) => [e.origem, e.status]), [['preleitura', 503], ['preleitura', 200]]);
+  assert.equal(eventos[1].tokensIn, 300); assert.equal(eventos[1].tokensOut, 50);
+  const pedro = await as('Pedro', '3220');
+  const daniel = await as('Daniel', '3220');
+  const ric = await as('Ricardo', '1234');
+  assert.equal((await ric.get('/api/ai-usage')).status, 403);
+  assert.equal((await daniel.get('/api/ai-usage')).status, 403);
+  const r = await pedro.get('/api/ai-usage');
+  assert.equal(r.status, 200);
+  assert.equal(r.data.dias.length, 30);
+  for (const k of ['hoje', 'limiteDia', 'contadorHoje', 'esgotado', 'chaveSeparada']) assert.ok(k in r.data, k);
+});
+
 test('horário da pré-leitura: semana, sábado mais curto, domingo desligado (fuso de São Paulo)', async () => {
   const cfg = DEFAULT_PREFETCH_CONFIG; // seg-sex 8-17, sáb 8-13, dom off
   const sp = (iso: string) => new Date(iso); // UTC-3: 11:00Z = 08:00 em SP

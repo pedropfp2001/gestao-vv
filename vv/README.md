@@ -74,3 +74,7 @@ Para a pré-leitura/relatórios nunca consumirem o limite do lançamento por IA,
 
 ### Leitura logo após lançar o pedido
 Quando um pedido é lançado, o servidor já começa a ler as mercadorias da foto em segundo plano (uma de cada vez, sem atrasar o lançamento). Assim o pedido costuma estar lido quando você abre o relatório. Conta no teto de leituras do dia e para se o Gemini avisar que o limite acabou. Para desligar: variável `READ_ON_CREATE=off` no Render.
+
+
+### Uso da IA (gráfico, só para o Pedro)
+No painel da Pré-leitura há o botão "Ver uso da IA": mostra, por dia e por origem (lançamento por IA, leitura ao lançar, pré-leitura, relatórios), quantas chamadas e quantos tokens foram usados, e quantas falhas por limite (429) ou sobrecarga do Google (503). O sistema guarda os últimos 60 dias. Só conta o que este sistema usou, a partir da atualização.

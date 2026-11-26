@@ -53,6 +53,8 @@ export class State {
   prefetchConfig: PrefetchConfig = { ...DEFAULT_PREFETCH_CONFIG };
   /** Quantas leituras a pré-leitura já fez hoje (dia de São Paulo) e se o Gemini já avisou que o limite acabou. */
   prefetchUso: { dia: string; usados: number; esgotado: boolean } = { dia: '', usados: 0, esgotado: false };
+  /** Uso da IA por dia (dia de São Paulo) e por origem; serve só para o gráfico do Pedro. */
+  aiUso: Record<string, Record<string, { chamadas: number; ok: number; f429: number; f503: number; fOutros: number; tokensIn: number; tokensOut: number }>> = {};
   brandMap: Record<string, string> = {};
   /** Marcas escolhidas para o relatório do envio diário (valem para todos os usuários). */
   reportBrands: { brands: string[]; updatedAt?: string; updatedBy?: string } = { brands: [] };
@@ -75,6 +77,7 @@ export class State {
       s.watch('settings', (t, id, d) => {
         if (id === 'brandSellers') { this.brandMap = t === 'remove' ? {} : { ...(d?.map || {}) }; this.touch(); }
         if (id === 'prefetchUso') { this.prefetchUso = t === 'remove' ? { dia: '', usados: 0, esgotado: false } : { dia: String(d?.dia || ''), usados: Number(d?.usados) || 0, esgotado: d?.esgotado === true }; }
+        if (id === 'aiUsage') { this.aiUso = t === 'remove' ? {} : { ...(d?.dias || {}) }; }
         if (id === 'prefetchConfig') { this.prefetchConfig = t === 'remove' ? { ...DEFAULT_PREFETCH_CONFIG } : mergePrefetchConfig(d); }
         if (id === 'reportBrands') { this.reportBrands = t === 'remove' ? { brands: [] } : { brands: Array.isArray(d?.brands) ? d.brands : [], updatedAt: d?.updatedAt, updatedBy: d?.updatedBy }; }
       }),

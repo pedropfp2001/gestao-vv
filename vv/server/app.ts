@@ -6,7 +6,7 @@ import type { Order, OverdueBoleto, AppNotification } from '../src/types';
 import { dentroDaJanela, mergePrefetchConfig } from './state';
 import { Store, StoreQuotaError, WriteOp } from './store';
 import { State, UserDoc } from './state';
-import { makeGeminiExtractor, makeGeminiItemsExtractor, ExtractError, Extractor, ItemsExtractor } from './extract';
+import { makeGeminiExtractor, makeGeminiItemsExtractor, ExtractError, Extractor, ItemsExtractor, UsoIA, OrigemIA } from './extract';
 import {
   DEFAULT_PINS, hashPin, verifyPin, signSession, readSession, parseCookies, setSessionCookie,
   clearSessionCookie, COOKIE_NAME, requireGestao, LoginLimiter,
@@ -234,9 +234,33 @@ export function createApp(store: Store, opts: AppOptions) {
     });
   });
 
-  const extractor = opts.extractor !== undefined ? opts.extractor : makeGeminiExtractor();
+  /* ---------- medidor de uso da IA (só para o gráfico do Pedro; nunca atrapalha a leitura) ---------- */
+  const diaSP = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+  let salvarUsoTimer: NodeJS.Timeout | null = null;
+  const registrarUso = (u: UsoIA) => {
+    const dia = diaSP();
+    const d = (state.aiUso[dia] ||= {});
+    const o = (d[u.origem] ||= { chamadas: 0, ok: 0, f429: 0, f503: 0, fOutros: 0, tokensIn: 0, tokensOut: 0 });
+    o.chamadas++;
+    if (u.status === 200) { o.ok++; o.tokensIn += u.tokensIn; o.tokensOut += u.tokensOut; }
+    else if (u.status === 429) o.f429++;
+    else if (u.status === 503) o.f503++;
+    else o.fOutros++;
+    if (salvarUsoTimer) return;
+    salvarUsoTimer = setTimeout(async () => {
+      salvarUsoTimer = null;
+      try {
+        const dias = Object.keys(state.aiUso).sort().slice(-60); // guarda só os últimos 60 dias
+        const mant: any = {}; dias.forEach((k) => { mant[k] = state.aiUso[k]; });
+        state.aiUso = mant;
+        await store.set('settings', 'aiUsage', { dias: mant, updatedAt: new Date().toISOString() });
+      } catch { /* o gráfico é só informativo */ }
+    }, 3000);
+    salvarUsoTimer.unref?.();
+  };
+  const extractor = opts.extractor !== undefined ? opts.extractor : makeGeminiExtractor(process.env, fetch, registrarUso);
   app.get('/api/extract-order/status', requireGestao, (_req, res) => res.json({ enabled: !!extractor }));
-  const itemsExtractor = opts.itemsExtractor !== undefined ? opts.itemsExtractor : makeGeminiItemsExtractor();
+  const itemsExtractor = opts.itemsExtractor !== undefined ? opts.itemsExtractor : makeGeminiItemsExtractor(process.env, fetch, registrarUso);
   app.get('/api/extract-items/status', (_req, res) => res.json({ enabled: !!itemsExtractor }));
   // Lê as mercadorias da foto de UM pedido em aberto e guarda no pedido (só quando o extrato precisa; não muda mais nada).
   app.post('/api/orders/:id/itens', wrap(async (req, res) => {
@@ -256,10 +280,10 @@ export function createApp(store: Store, opts: AppOptions) {
   }));
 
   /** Lê a foto de um pedido e guarda os itens nele (usado pelo botão do extrato e pela pré-leitura). null = sem foto. */
-  async function lerItens(cur: any) {
+  async function lerItens(cur: any, origem: OrigemIA = 'relatorio') {
     const doc = await store.get('orderImages', cur.id);
     if (!doc?.data || !isDataImage(doc.data)) return null;
-    const out = await once(`itens-${cur.id}`, () => itemsExtractor!(doc.data));
+    const out = await once(`itens-${cur.id}`, () => itemsExtractor!(doc.data, origem));
     const fresh: any = state.orders.get(cur.id) || cur;
     const now = new Date().toISOString();
     const upd = cleanUndefined({ ...fresh, itens: out.itens, bilhete: out.bilhete, vencimento: out.vencimento, itensLidosEm: now, updatedAt: now });
@@ -301,7 +325,7 @@ export function createApp(store: Store, opts: AppOptions) {
       const o: any = state.orders.get(id);
       if (!o || o.status !== 'em_aberto' || jaLido(o) || !o.imageUrl) return;
       try {
-        const r = await lerItens(o);
+        const r = await lerItens(o, 'ao_lancar');
         if (r) { uso.usados++; await salvarUso(); }
       } catch (e: any) {
         uso.usados++;
@@ -323,7 +347,7 @@ export function createApp(store: Store, opts: AppOptions) {
       prefetchInfo.fila = fila.length;
       for (const o of fila) {
         try {
-          const r = await lerItens(o);
+          const r = await lerItens(o, 'preleitura');
           if (r) { prefetchInfo.lidosNaUltima++; uso.usados++; } else prefetchFail.set(o.id, Date.now()); // sem foto: não gasta chamada
         } catch (e: any) {
           prefetchFail.set(o.id, Date.now()); uso.usados++;
@@ -347,6 +371,18 @@ export function createApp(store: Store, opts: AppOptions) {
       naJanela: dentroDaJanela(state.prefetchConfig), config: state.prefetchConfig, agora: new Date().toISOString(),
     });
   });
+  // Gráfico de uso da IA: só o Pedro.
+  app.get('/api/ai-usage', requireGestao, (req, res) => {
+    if (String(req.user) !== 'Pedro') return res.status(403).json({ error: 'Só o Pedro vê o uso da IA.' });
+    const dias: any[] = [];
+    for (let i = 29; i >= 0; i--) {
+      const k = new Date(Date.now() - i * 86400000).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+      dias.push({ dia: k, origens: state.aiUso[k] || {} });
+    }
+    const uso = usoHoje();
+    res.json({ dias, hoje: diaSP(), limiteDia: state.prefetchConfig.limiteDia, contadorHoje: uso.usados, esgotado: uso.esgotado, chaveSeparada: !!process.env.GEMINI_ITEMS_API_KEY });
+  });
+
   app.put('/api/prefetch/config', requireGestao, wrap(async (req, res) => {
     const cfg = mergePrefetchConfig(req.body);
     await store.set('settings', 'prefetchConfig', { ...cfg, updatedAt: new Date().toISOString(), updatedBy: String(req.user) });

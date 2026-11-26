@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Loader2, Play, Settings2, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Loader2, Play, Settings2, AlertTriangle, CheckCircle2, BarChart3 } from 'lucide-react';
+import { UsoIAModal } from './UsoIAModal';
 
 interface Janela { inicio: number; fim: number }
 interface Status {
@@ -17,6 +18,7 @@ export const PreleituraPainel: React.FC = () => {
   const [editando, setEditando] = useState(false);
   const [cfg, setCfg] = useState<Status['config'] | null>(null);
   const [salvando, setSalvando] = useState(false);
+  const [verUso, setVerUso] = useState(false);
 
   const load = async () => {
     if (document.visibilityState !== 'visible') return;
@@ -79,6 +81,9 @@ export const PreleituraPainel: React.FC = () => {
           <button disabled={st.rodando || st.pendentes === 0} onClick={lerAgora} className="w-full px-3 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-40 text-[11px] font-bold text-slate-700 flex items-center justify-center gap-1.5 cursor-pointer"><Play className="w-3 h-3" /> Ler agora</button>
         </>
       )}
+
+      <button onClick={() => setVerUso(true)} className="w-full px-3 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-[11px] font-bold text-slate-700 flex items-center justify-center gap-1.5 cursor-pointer"><BarChart3 className="w-3 h-3" /> Ver uso da IA</button>
+      {verUso && <UsoIAModal onClose={() => setVerUso(false)} />}
 
       {editando && cfg && (
         <div className="pt-2 border-t border-slate-200 space-y-2 text-[11px] text-slate-700">
